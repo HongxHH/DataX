@@ -59,4 +59,16 @@ const usageFromSession = liveBundleFromMessages(done, {
 });
 assert(usageFromSession.contextUsage?.used_input_tokens === 9000, "session root usage wins");
 
+const withPacked: ChatMessage[] = [
+  { role: "user", content: "查房间" },
+  {
+    role: "assistant",
+    content: "12 间",
+    prompt_inventory: { ir_summary_count: 1, workers: [{ sub_id: 11, artifact_count: 2, has_error: false }] },
+  },
+];
+const packedFromMsg = liveBundleFromMessages(withPacked);
+assert(packedFromMsg.promptInventory?.ir_summary_count === 1, "packed from last assistant");
+assert(packedFromMsg.promptInventory?.workers[0].sub_id === 11, "packed worker id");
+
 console.log("copilotLive.test.ts ok");

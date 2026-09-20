@@ -836,6 +836,45 @@ body {
   line-height: 1;
 }
 
+.prompt-inventory-waiting {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 0 4px;
+}
+
+.prompt-inventory-ir {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.prompt-inventory-ir li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 0.75rem;
+}
+
+.prompt-inventory-ir-tool {
+  font-weight: 650;
+}
+
+.prompt-inventory-ir-nodes {
+  color: var(--text-muted);
+}
+
+.prompt-inventory-worker-error {
+  font-size: 0.68rem;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(176, 0, 32, 0.28);
+  color: var(--danger, #b00020);
+}
+
 .prompt-inventory-popover {
   position: absolute;
   top: calc(100% + 8px);
