@@ -15,8 +15,7 @@
 | 你想问 | 谁来做 |
 |--------|--------|
 | 数量、列表、统计、对比、排名 | NL2SQL（只读查库） |
-| 表怎么 JOIN、字段是否同义 | DataLink |
-| 口径、字段含义、业务规则 | Document Recall |
+| 口径、字段含义、业务规则、表怎么 JOIN | Document Recall |
 | 折线 / 柱状 / 饼图 | 先查数，再 Plot |
 | 写成文档 | Report（不查库） |
 
@@ -31,13 +30,11 @@ flowchart LR
   Browser["浏览器 :5173"] -->|SSE / REST| Shell["shell/backend :8788"]
   Shell --> Copilot["ReAct Copilot"]
   Copilot --> NL2SQL
-  Copilot --> DataLink
   Copilot --> Docs["Document Recall"]
   Copilot --> Plot
   Copilot --> Report
   NL2SQL --> MySQL[(业务库 MySQL)]
   NL2SQL --> Semantic["Semantic Service"]
-  DataLink --> MCP["DataLink MCP"]
   Docs --> MD["schema 文档语料"]
 ```
 
@@ -48,7 +45,7 @@ shell/backend        Profile、会话、把内核流转成壳事件
         ↕ SDK
 dataagent/           Agent 内核（YAML 编排、NL2SQL、子 Agent）
         ↕
-MySQL / Semantic Service / DataLink MCP   外部依赖，不在本仓库
+MySQL / Semantic Service   外部依赖，不在本仓库
 ```
 
 壳协议、Profile 和 SSE 事件见 [shell/README.md](shell/README.md)。
@@ -73,7 +70,6 @@ Semantic Service、本地会话和密钥不在本仓库。Python 包导入路径
 | Node.js 20+ | `shell/web` |
 | MySQL | 示例库名 `landcheck`，也可换成自己的库 |
 | Semantic Service | NL2SQL 语义层，默认 `:32000` |
-| DataLink MCP | 可选；不问表关系可以先不启 |
 | LLM | 任意 OpenAI 兼容接口 |
 
 ## 快速开始

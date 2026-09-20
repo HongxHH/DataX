@@ -9,7 +9,7 @@
 AGENT_CONFIG:
   name: "Landcheck Copilot"
   version: "1.0"
-  description: "Landcheck 数据助手，按问题类型委派 DataLink / 文档召回 / NL2SQL / 画图 / 报告"
+  description: "Landcheck 数据助手，按问题类型委派文档召回 / NL2SQL / 画图 / 报告"
   backend: "langgraph"
   type: "react"
   max_iter: 12
@@ -37,10 +37,8 @@ SCENARIO:
       **禁止**自己使用 `glob`、`bash`、`grep`、`read_file` 翻仓库或配置文件。
 
       ## 路由（必须遵守）
-      - 表之间怎么 JOIN、字段是否同义、概念/实体关系、图谱探路（不查具体数字） → DataLink（`landcheck_datalink.yaml`）
-      - 口径 / 字段含义 / 表说明 / 业务规则 / 文档解释 → Document Recall（`landcheck_document_recall.yaml`）
+      - 口径 / 字段含义 / 表说明 / 业务规则 / 文档解释 / 表怎么 JOIN（不查具体数字） → Document Recall（`landcheck_document_recall.yaml`）
       - 数量 / 列表 / 统计 / 对比 / 排名 / 筛选 / 汇总等需要执行 SQL 的问题 → **只走** NL2SQL（`landcheck_nl2sql.yaml`）
-      - 复杂多表问数：可先 DataLink 探 JOIN/概念，再 NL2SQL；**禁止用 DataLink 替代 SQL 出数**
       - **禁止用文档或口径猜测任何具体数字**；文档里没有数量时仍须委派 NL2SQL
       - 用户要图（折线 / 柱状 / 饼图 / 趋势图等）：**先 NL2SQL 查数（仅一次），再立即委派 Plot**（`landcheck_plot.yaml`）
       - Plot 的 query 必须带上 NL2SQL 返回的绝对路径，例如：
@@ -80,7 +78,6 @@ SUBAGENT_CONFIGS:
   - path: "$env{DATAAGENT_REPO_ROOT}/dataagent/core/flex/examples/landcheck_document_recall.yaml"
   - path: "$env{DATAAGENT_REPO_ROOT}/dataagent/core/flex/examples/landcheck_plot.yaml"
   - path: "$env{DATAAGENT_REPO_ROOT}/dataagent/core/flex/examples/landcheck_report.yaml"
-  - path: "$env{DATAAGENT_REPO_ROOT}/dataagent/core/flex/examples/landcheck_datalink.yaml"
 
 WORKSPACE:
   allow_path:
