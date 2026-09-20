@@ -18,7 +18,7 @@
 ## 架构
 
 ```text
-浏览器 (:5173) → shell/backend (:8788) → DataAgent SDK → Semantic / MySQL / DataLink MCP
+浏览器 (:5173) → shell/backend (:8788) → 内核 SDK → Semantic / MySQL / DataLink MCP
 ```
 
 分层：

@@ -69,7 +69,7 @@ curl -sS -o /dev/null -w "%{http_code}\n" "$BASE/types/typedefs"
 # 期望 200
 ```
 
-完整向量检索：下载 `BAAI/bge-base-zh-v1.5`，设置 `semantic_service.vector.embedding.service.enable=true` 和本地 `model.path` 后重启，再导入 seed。详见 `docs/zh/installation_doc/database_install/semantic-service-deployment.md`。
+完整向量检索：下载 `BAAI/bge-base-zh-v1.5`，设置 `semantic_service.vector.embedding.service.enable=true` 和本地 `model.path` 后重启，再导入 seed。Semantic Service 是外部依赖，不在本仓库。
 
 Landcheck Copilot 已使用 `schema_linking`；嵌入未打开时列检索会失败（`queryVector is null`）。
 
