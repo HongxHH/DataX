@@ -15,6 +15,7 @@ import { usePersistedToggle } from "../../components/shared/usePersistedToggle";
 import { ToolTimeline } from "../../components/shared/ToolTimeline";
 import { PromptInventoryControl } from "../../components/chat-copilot/PromptInventoryControl";
 import { isMainAgentUsage, parseContextUsage } from "../../components/chat-copilot/contextUsageModel";
+import { isMainAgentInventory, parsePromptInventory } from "../../components/chat-copilot/promptInventoryModel";
 import { TrajectoryDrawer } from "../../components/chat-copilot/TrajectoryDrawer";
 import type { TrajectoryGroup } from "../../components/chat-copilot/trajectoryModel";
 import { CopilotMessageList } from "../../components/chat-copilot/CopilotMessageList";
@@ -50,7 +51,7 @@ import type {
   DelegationBlock,
   SessionSummary,
 } from "../../types";
-import type { ContextUsageSnapshot } from "../../protocol/events";
+import type { ContextUsageSnapshot, PromptInventorySnapshot } from "../../protocol/events";
 
 const LIVE_SPANS_MAX = 80; // align with shell/backend/session/live_span.py SPANS_MAX
 
@@ -86,6 +87,7 @@ export default function ChatCopilot({
   const [activeTurn, setActiveTurn] = useState<ChatMessage | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | null>(null);
+  const [promptInventory, setPromptInventory] = useState<PromptInventorySnapshot | null>(null);
   const [runningId, setRunningId] = useState<string | null>(null);
   const [trajectoryOpen, setTrajectoryOpen] = useState(false);
   const [sessionsCollapsed, toggleSessions] = usePersistedToggle(SESSIONS_COLLAPSED_KEY);
@@ -121,6 +123,7 @@ export default function ChatCopilot({
       toolEvents,
       focusedNodeId,
       contextUsage,
+      promptInventory,
     });
   }, [
     activeId,
@@ -136,6 +139,7 @@ export default function ChatCopilot({
     toolEvents,
     focusedNodeId,
     contextUsage,
+    promptInventory,
   ]);
 
   const refreshSessions = useCallback(async () => {
@@ -155,6 +159,7 @@ export default function ChatCopilot({
     setToolEvents(bundle.toolEvents);
     setFocusedNodeId(bundle.focusedNodeId);
     setContextUsage(bundle.contextUsage);
+    setPromptInventory(bundle.promptInventory);
   }, []);
 
   const applyLive = useCallback(
@@ -325,6 +330,7 @@ export default function ChatCopilot({
     let lastPrep = ["正在规划…"];
     let lastRewritten = "";
     let lastContextUsage: ContextUsageSnapshot | null = null;
+    let lastPromptInventory: PromptInventorySnapshot | null = null;
     let lastOtelSpans: SpanEventData[] = [];
     abortRef.current?.abort();
     const abortController = new AbortController();
@@ -339,10 +345,12 @@ export default function ChatCopilot({
         turn_started_at: message.turn_started_at ?? turnStarted,
         turn_ended_at: Date.now(),
         ...(lastContextUsage ? { context_usage: lastContextUsage } : {}),
+        ...(lastPromptInventory ? { prompt_inventory: lastPromptInventory } : {}),
       };
       applyLive(sessionId, (prev) => ({
         ...emptyCopilotLive([...prev.messages, ended]),
         contextUsage: lastContextUsage ?? prev.contextUsage,
+        promptInventory: lastPromptInventory ?? prev.promptInventory,
       }));
       setLoading(false);
       setRunningId(null);
@@ -498,6 +506,12 @@ export default function ChatCopilot({
             setSessions((prev) =>
               prev.map((item) => (item.id === sessionId ? { ...item, context_usage: parsed } : item)),
             );
+          },
+          onPromptInventory: (data) => {
+            const parsed = parsePromptInventory(data);
+            if (!parsed || !isMainAgentInventory(parsed)) return;
+            lastPromptInventory = parsed;
+            applyLive(sessionId, (prev) => ({ ...prev, promptInventory: parsed }));
           },
           onSpan: (data) => {
             const span = data as SpanEventData;
@@ -662,6 +676,7 @@ export default function ChatCopilot({
               {activeId ? <SessionIdChip sessionId={activeId} /> : null}
               <PromptInventoryControl
                 usage={contextUsage}
+                packed={promptInventory}
                 messages={messages}
                 activeTurn={activeTurn}
                 liveDelegations={collectVisibleDelegations(messages, activeTurn)}

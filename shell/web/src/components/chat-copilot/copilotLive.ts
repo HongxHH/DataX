@@ -1,4 +1,4 @@
-import type { ContextUsageSnapshot, PlanToolItem, ThinkPhase, ToolEventData } from "../../protocol/events";
+import type { ContextUsageSnapshot, PlanToolItem, PromptInventorySnapshot, ThinkPhase, ToolEventData } from "../../protocol/events";
 import type { ChatMessage, DelegationBlock } from "../../types";
 import { isMainAgentUsage } from "./contextUsageModel";
 import { stampRunning } from "./delegationState";
@@ -16,6 +16,7 @@ export interface CopilotLiveBundle {
   toolEvents: ToolEventData[];
   focusedNodeId: string | null;
   contextUsage: ContextUsageSnapshot | null;
+  promptInventory: PromptInventorySnapshot | null;
 }
 
 export const RUNNING_ASSISTANT_PLACEHOLDER = "处理中…";
@@ -45,6 +46,7 @@ export function emptyCopilotLive(messages: ChatMessage[] = []): CopilotLiveBundl
     toolEvents: [],
     focusedNodeId: null,
     contextUsage: null,
+    promptInventory: null,
   };
 }
 
@@ -59,6 +61,14 @@ export function contextUsageOfSession(
     if (usage && usage.used_input_tokens != null && isMainAgentUsage(usage)) {
       return usage;
     }
+  }
+  return null;
+}
+
+export function promptInventoryOfSession(messages: ChatMessage[]): PromptInventorySnapshot | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const packed = messages[i]?.prompt_inventory;
+    if (packed && (packed.sub_id == null || packed.sub_id <= 0)) return packed;
   }
   return null;
 }
@@ -85,12 +95,14 @@ export function liveBundleFromMessages(
       planTools: last.plan_tools ?? [],
       planPrepLog: last.plan_prep ?? [],
       contextUsage: contextUsageOfSession(messages, options?.contextUsage),
+      promptInventory: last.prompt_inventory ?? promptInventoryOfSession(prior),
     };
   }
   const sealed = messages.map(sealInterruptedAssistant);
   return {
     ...emptyCopilotLive(sealed),
     contextUsage: contextUsageOfSession(sealed, options?.contextUsage),
+    promptInventory: promptInventoryOfSession(sealed),
   };
 }
 

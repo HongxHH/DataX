@@ -3,9 +3,11 @@ import {
   buildPromptInventory,
   collectPackedWorkers,
   historyExplain,
+  parsePromptInventory,
   parseRecallCheckpoint,
   parseRewrittenQuery,
   resolveInventoryPrepLog,
+  resolvePackedInventory,
   resolveRewrittenQuery,
 } from "./promptInventoryModel";
 import type { ChatMessage, DelegationBlock } from "../../types";
@@ -77,6 +79,11 @@ assert(ir?.chip.label === "已压缩（IR）", "ir chip");
 assert(ir?.detail.includes("路径摘要") === true, "ir detail");
 const full = historyExplain({ used_input_tokens: 10, history: "restore" });
 assert(full?.chip.label === "完整", "restore chip");
+const packedHistory = historyExplain(
+  { used_input_tokens: 10, history: "compressed", compress_kind: "ir" },
+  { ir_summary_count: 2, workers: [] },
+);
+assert(packedHistory?.detail.includes("2 条 IR 摘要") === true, "packed ir count");
 
 const shares = usagePartShares({
   used_input_tokens: 100,
@@ -121,5 +128,42 @@ assert(inventory.recall?.status === "hit", "inventory recall");
 assert(inventory.rewrittenQuery === "西湖项目房间数", "inventory rewrite");
 assert(inventory.parts?.length === 4, "inventory parts");
 assert(inventory.history?.chip.label === "已压缩（IR）", "inventory history");
+assert(inventory.source === "inferred", "inferred when packed missing");
+assert(inventory.ir === null, "inferred has no ir cards");
+
+const parsedPacked = parsePromptInventory({
+  ir_summary_count: 1,
+  skill_count: 2,
+  has_plan: true,
+  has_memory: true,
+  recall: "hit",
+  workers: [{ sub_id: 11, artifact_count: 2, has_error: false, last_query: "secret query" }],
+  ir_summaries: [{ tool: "sub_agent_tool", nodes: ["Table", "../etc"], path: "/tmp/x" }],
+  content: "secret prompt",
+});
+assert(parsedPacked?.workers[0].sub_id === 11, "parse worker id");
+assert(parsedPacked?.ir_summaries?.[0].nodes?.join() === "Table", "drop illegal node types");
+assert(!JSON.stringify(parsedPacked).includes("secret"), "parse drops prompt text");
+
+const packedInventory = buildPromptInventory({
+  usage: {
+    used_input_tokens: 100,
+    history: "compressed",
+    compress_kind: "ir",
+  },
+  packed: parsedPacked,
+  delegations: messages[1].delegations ?? [],
+  prepLog: ["跨会话记忆：未命中"],
+});
+assert(packedInventory.source === "packed", "prefer packed");
+assert(packedInventory.workers[0].sub_id === 11, "packed workers ignore dag");
+assert(packedInventory.workers[0].artifacts[0] === "2 个产物", "artifact count only");
+assert(packedInventory.recall?.label === "已装入跨会话记忆。", "packed recall without excerpt");
+assert(packedInventory.ir?.count === 1, "packed ir count");
+assert(packedInventory.flags?.skillCount === 2 && packedInventory.flags.hasPlan === true, "packed flags");
+
+const livePacked = resolvePackedInventory(messages, null, parsedPacked);
+assert(livePacked?.ir_summary_count === 1, "live packed wins");
+assert(parsePromptInventory({ workers: [] }) === null, "require ir_summary_count");
 
 console.log("promptInventoryModel.test.ts ok");
