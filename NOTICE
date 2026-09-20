@@ -1,0 +1,14 @@
+DataX
+Copyright 2026 DataX contributors
+
+This product includes software derived from DataAgent
+(https://gitcode.com/datagallery/dataagent), licensed under the Apache License,
+Version 2.0. DataAgent is a project of DataGallery.
+
+DataX is an independent derivative. It is not an official DataGallery product,
+and it is not affiliated with Alibaba DataX (https://github.com/alibaba/DataX).
+
+Substantial modifications include a Copilot Web shell, sub-agent orchestration,
+streaming DAG / artifact UI, and related kernel event patches.
+
+See README.md and LICENSE for details.

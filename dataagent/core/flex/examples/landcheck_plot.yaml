@@ -1,0 +1,68 @@
+# Landcheck Copilot 画图子 Agent：只读已落盘的 CSV + SQL，禁止查库
+
+AGENT_CONFIG:
+  name: "Landcheck Plot"
+  version: "1.0"
+  description: "用户要折线图/柱状图/饼图时必须走本配置：读取已落盘 CSV+SQL 出图，禁止再用 NL2SQL"
+  backend: "langgraph"
+  type: "react"
+  max_iter: 6
+  debug: false
+
+MODEL:
+  chat_model:
+    provider: "openai"
+    model_type: "chat"
+    params:
+      model: "$env{OPENAI_MODEL}"
+      temperature: 0.2
+      base_url: "$env{OPENAI_BASE_URL}"
+      api_key: "$env{OPENAI_API_KEY}"
+
+SCENARIO:
+  chat:
+    instructions: |
+      你是 Landcheck 画图 Agent。只能根据主 Agent 提供的 CSV 与 SQL 文件画图。
+
+      ## 禁止
+      - 禁止查数据库、禁止编写或执行 SQL 查询
+      - 禁止调用 sub_agent_tool
+      - 禁止 glob / bash / grep 翻仓库自救
+      - 没有 CSV 路径时直接说明缺少数据文件，不要编造数据
+      - 禁止自行编写 Python 脚本画图
+
+      ## 必须
+      - 使用查询中给出的绝对路径：`src_data_path`（CSV）与 `sql_command_path`（.sql）
+      - 调用 `natural_language_to_plot`，把图保存到当前 workspace 的 `plot/<时间戳>/` 下
+      - image_path 必须带时间戳后缀，避免覆盖
+      - json_path 写在同一目录的 `plots.json`
+      - 完成后在回答里写明 PNG 与 JSON 的绝对路径
+
+TOOLS:
+  local_functions:
+    - module: "dataagent.actions.tools.local_tool.tools"
+      function: "natural_language_to_plot"
+
+WORKSPACE:
+  allow_path:
+    - "$env{DATAAGENT_REPO_ROOT}/dataagent/core/flex/examples"
+
+PRE_WORKFLOW: []
+POST_WORKFLOW: []
+
+GOVERNANCE:
+  invisibility:
+    - glob
+    - bash
+    - grep
+    - read_file
+    - write_file
+    - edit_file
+    - create_plan
+    - update_plan
+    - delete_plan
+    - complete_current_todo
+    - sub_agent_tool
+    - submit_subagent
+    - poll_subagent
+    - collect_subagent

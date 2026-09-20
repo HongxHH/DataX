@@ -1,0 +1,66 @@
+AGENT_CONFIG:
+  name: "Landcheck NL2SQL"
+  version: "1.0"
+  description: "只生成并执行只读 SELECT，不能画图、不能运行 Python 脚本"
+  backend: "langgraph"
+  type: "nl2sql"
+
+MODEL:
+  chat_model:
+    provider: "openai"
+    model_type: "chat"
+    params:
+      model: "$env{OPENAI_MODEL}"
+      temperature: 0.0
+      base_url: "$env{OPENAI_BASE_URL}"
+      api_key: "$env{OPENAI_API_KEY}"
+
+CORE:
+  perceptor:
+    schema_mode: "schema_linking"
+    top_k: 10
+    user_schema: null
+    user_evidence: null
+    user_sql_rules: "sql_rules_landcheck"
+    user_few_shot_examples: null
+  generator:
+    strategies: ["prompt"]
+    num_workers: 1
+    num_samples: 1
+  validator:
+    sql_security_enabled: true
+    read_only: true
+    db_explain: true
+    keyword_match: false
+    metadata_match: false
+  reflector:
+    threshold: 0.9
+    ref_retries: 2
+  executor:
+    limit: -1
+    preview_limit: 50
+  selector:
+    shortcut: -1
+    threshold: 0.9
+    sel_retries: 1
+
+DATASOURCE:
+  database_address: $env{DATASOURCE_DATABASE_ADDRESS}
+  database_table_name: $env{MYSQL_DATABASE}
+
+DATABASE:
+  db_id: "$env{MYSQL_DATABASE}"
+  dialect: "mysql"
+  engine: "mysql"
+  config:
+    host: "$env{MYSQL_HOST}"
+    port: 3306
+    user: "$env{MYSQL_USER}"
+    password: "$env{MYSQL_PASSWORD}"
+    database: "$env{MYSQL_DATABASE}"
+
+SEMANTIC_LAYER:
+  base_url: "$env{SEMANTIC_LAYER_BASE_URL}"
+  username: null
+  password: null
+  timeout: 60

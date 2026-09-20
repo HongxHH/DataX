@@ -1,0 +1,61 @@
+# Landcheck Copilot 报告子 Agent：读分析文本与 plot JSON，禁止查库
+
+AGENT_CONFIG:
+  name: "Landcheck Report"
+  version: "1.0"
+  description: "根据查询结论与图表清单生成 Markdown 报告，不查数据库"
+  backend: "langgraph"
+  type: "react"
+  max_iter: 8
+  debug: false
+
+MODEL:
+  chat_model:
+    provider: "openai"
+    model_type: "chat"
+    params:
+      model: "$env{OPENAI_MODEL}"
+      temperature: 0.3
+      base_url: "$env{OPENAI_BASE_URL}"
+      api_key: "$env{OPENAI_API_KEY}"
+
+SCENARIO:
+  chat:
+    instructions: |
+      你是 Landcheck 报告 Agent。根据主 Agent 提供的分析文本与图表 JSON 生成 Markdown 报告。
+
+      ## 禁止
+      - 禁止查数据库、禁止编写或执行 SQL
+      - 禁止调用 sub_agent_tool
+      - 禁止 glob / bash / grep 翻仓库自救
+      - 禁止编造未出现在分析或图表说明中的数字
+
+      ## 流程
+      1. 若查询给出了待分析文本或文本路径，先调用 `llm_analyzer` 写成 `report/<时间戳>/analysis.md`
+      2. 再调用 `report_generator`，`images_path` 使用主 Agent 提供的 plot JSON（若有）
+      3. 报告输出到 `report/<时间戳>/report.md`
+      4. 回答中写明报告绝对路径，并用 3–6 句概括结论
+
+TOOLS:
+  local_functions:
+    - module: "dataagent.actions.tools.local_tool.tools"
+      function: "llm_analyzer"
+    - module: "dataagent.actions.tools.local_tool.tools"
+      function: "report_generator"
+
+WORKSPACE:
+  allow_path:
+    - "$env{DATAAGENT_REPO_ROOT}/dataagent/core/flex/examples"
+
+PRE_WORKFLOW: []
+POST_WORKFLOW: []
+
+GOVERNANCE:
+  invisibility:
+    - glob
+    - bash
+    - grep
+    - sub_agent_tool
+    - submit_subagent
+    - poll_subagent
+    - collect_subagent

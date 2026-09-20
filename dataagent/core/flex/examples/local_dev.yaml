@@ -1,0 +1,44 @@
+# 本地二次开发入口：火山方舟 OpenAI 兼容接口
+# 启动：uv run -m dataagent --config dataagent/core/flex/examples/local_dev.yaml
+#
+# 密钥与模型名放在仓库根目录 .env：
+#   OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL
+
+AGENT_CONFIG:
+  name: "Local Dev Agent"
+  version: "1.0"
+  description: "本地二次开发 Agent"
+  backend: "langgraph"
+  type: "react"
+
+MODEL:
+  chat_model:
+    provider: "openai"
+    model_type: "chat"
+    params:
+      model: "$env{OPENAI_MODEL}"
+      temperature: 0.7
+      base_url: "$env{OPENAI_BASE_URL}"
+      api_key: "$env{OPENAI_API_KEY}"
+
+# ecommerce / sql_reader：地址不含库名，库名在 database_table_name
+DATASOURCE:
+  database_address: $env{DATASOURCE_DATABASE_ADDRESS}
+  database_table_name: $env{MYSQL_DATABASE}
+
+# NL2SQL 执行层：dialect=mysql 时 config 需要 host/port/user/password/database
+DATABASE:
+  db_id: "$env{MYSQL_DATABASE}"
+  dialect: "mysql"
+  engine: "mysql"
+  config:
+    host: "$env{MYSQL_HOST}"
+    port: 3306
+    user: "$env{MYSQL_USER}"
+    password: "$env{MYSQL_PASSWORD}"
+    database: "$env{MYSQL_DATABASE}"
+
+SCENARIO:
+  chat:
+    instructions: |
+      你是一个数据分析助手。根据用户问题直接回答；需要工具时，只使用已注册工具。

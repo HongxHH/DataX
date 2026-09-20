@@ -1,0 +1,10 @@
+id: landcheck-nl2sql
+title: Landcheck NL2SQL
+layout: data-workbench
+agent_config: dataagent/core/flex/examples/landcheck_nl2sql.yaml
+agent_type: nl2sql
+features:
+  sql_panel: true
+  result_table: true
+  stage_bar: true
+  semantic_required: true

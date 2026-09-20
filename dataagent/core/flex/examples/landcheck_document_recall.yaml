@@ -1,0 +1,81 @@
+# Landcheck Copilot 文档召回子 Agent（同步 sub_agent_tool）
+# 语料目录：schema/landcheck_docs/（追加 .md 即可，不必改本文件）
+
+AGENT_CONFIG:
+  name: "Document Recall"
+  version: "1.0"
+  description: "从 Landcheck 口径/表说明 Markdown 中检索摘录，不查库、不猜数字"
+  backend: "langgraph"
+  type: "react"
+  max_iter: 8
+  debug: false
+
+MODEL:
+  chat_model:
+    provider: "openai"
+    model_type: "chat"
+    params:
+      model: "$env{OPENAI_MODEL}"
+      temperature: 0.1
+      base_url: "$env{OPENAI_BASE_URL}"
+      api_key: "$env{OPENAI_API_KEY}"
+
+DOCUMENT_RECALL:
+  max_entries: 12
+
+SCENARIO:
+  chat:
+    input: 文档语义检索查询
+    task: 从 landcheck_docs 找出与查询相关的口径与表说明摘录
+    instructions: |
+      你是 Landcheck 文档召回 Agent。只检索语料目录中的 Markdown，不要查数据库，不要猜测具体数量。
+
+      ## 语料目录（只读）
+      `$env{DATAAGENT_REPO_ROOT}/schema/landcheck_docs`
+      只检索该目录下的 `.md`。禁止翻仓库其它目录。
+
+      ## 核心原则
+      - 宁可多召回也不要遗漏：如果某段内容可能相关，就将其摘录
+      - 保持原文语义：摘录时不要改写或总结，保留原始措辞
+      - 标注来源：每条摘录必须注明文档路径和行号范围
+      - 不相关就跳过：明确不相关的内容不要包含在结果中
+      - 绝对禁止使用 edit_file, write_file 等工具修改文档内容
+      - 最多保存 12 条摘录；达到上限后停止 save_recall_entry，立刻 merge_recall_results
+      - 文档里没有具体数字时，明确写「未找到数量，需走 NL2SQL」，禁止编造
+
+      ## 工作流程
+      1. 从用户查询提取实体（表名、字段名、口径用语）
+      2. 用 grep 在语料目录搜索关键词（content 模式，带 context）
+      3. 用 read_file 阅读匹配处上下文（每次 80–150 行）
+      4. 相关则 save_recall_entry（source_path / start_line / end_line / relevance / excerpt）
+      5. 全部保存后必须调用一次 merge_recall_results
+      6. 最终输出召回结果文件路径和关键发现摘要
+
+      如果完全没有相关信息，直接报告「未找到相关内容」，不要编造。
+
+TOOLS:
+  local_functions:
+    - name: save_recall_entry
+      function: save_recall_entry
+      module: dataagent.agents.document_recall.tools
+    - name: merge_recall_results
+      function: merge_recall_results
+      module: dataagent.agents.document_recall.tools
+  builtin:
+    - name: grep
+      module: dataagent.actions.tools.local_tool.tools
+      function: grep
+    - name: read_file
+      module: dataagent.actions.tools.local_tool.tools
+      function: read_file
+    - name: glob
+      module: dataagent.actions.tools.local_tool.tools
+      function: glob
+
+WORKSPACE:
+  allow_path:
+    - "$env{DATAAGENT_REPO_ROOT}/schema/landcheck_docs"
+    - "$env{DATAAGENT_REPO_ROOT}/dataagent/core/flex/examples"
+
+PRE_WORKFLOW: []
+POST_WORKFLOW: []

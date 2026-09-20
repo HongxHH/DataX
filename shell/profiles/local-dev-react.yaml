@@ -1,0 +1,9 @@
+id: local-dev-react
+title: Local Dev 对话
+layout: chat-copilot
+agent_config: dataagent/core/flex/examples/local_dev.yaml
+agent_type: react
+features:
+  token_stream: true
+  tool_timeline: true
+  semantic_required: false

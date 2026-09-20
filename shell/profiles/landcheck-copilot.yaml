@@ -1,0 +1,10 @@
+id: landcheck-copilot
+title: Landcheck Copilot
+layout: chat-copilot
+agent_config: dataagent/core/flex/examples/landcheck_copilot.yaml
+agent_type: react
+features:
+  token_stream: true
+  tool_timeline: true
+  semantic_required: true
+  orchestrated: true
