@@ -92,6 +92,7 @@ export interface ChatMessage {
   rewritten_query?: string;
   context_usage?: ContextUsageSnapshot;
   prompt_inventory?: PromptInventorySnapshot;
+  sub_prompt_inventories?: Record<string, PromptInventorySnapshot>;
   turn_started_at?: number;
   turn_ended_at?: number;
   otel_spans?: SpanEventData[];

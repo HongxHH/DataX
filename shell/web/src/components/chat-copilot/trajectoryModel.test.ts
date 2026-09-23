@@ -1,8 +1,15 @@
 import {
   buildTrajectoryForest,
   findTrajectoryBranch,
+  formatTokenTotal,
+  mainAgentLiveBranch,
+  mainLlmRole,
   spansFromGroups,
   spansFromLive,
+  spanModelDetail,
+  spanShortLabel,
+  summarizeTrajectoryForest,
+  thinkingByLlmSpan,
   visibleTrajectorySpans,
   type LiveSpanEvent,
   type TrajectoryGroup,
@@ -131,7 +138,7 @@ assert(mainRound, "round branch exists");
 assert(mainRound?.title.startsWith("第"), `round title, got ${mainRound?.title}`);
 assert(mainRound?.spans.some((span) => span.label === "qwen-plus"), "planner llm stays on its round");
 assert(c1, "c1 branch");
-assert(c1?.title.includes("Landcheck NL2SQL") && c1.title.includes("#1"), `c1 title, got ${c1?.title}`);
+assert(c1?.title.includes("NL2SQL") && c1.title.includes("#1") && !c1.title.includes("Landcheck"), `c1 title, got ${c1?.title}`);
 assert(
   mainRound?.children.some((child) => child.id === "c1"),
   "c1 hangs under the round, not as a sibling of main",
@@ -211,8 +218,142 @@ const named = findTrajectoryBranch(
   "later",
 );
 assert(
-  named?.title.includes("Landcheck NL2SQL") && named.title.includes("#1"),
+  named?.title.includes("NL2SQL") && named.title.includes("#1") && !named.title.includes("Landcheck"),
   `full-session delegations still name older tools, got ${named?.title}`,
 );
+
+const rewriteLive = mainAgentLiveBranch([
+  { kind: "llm", phase: "start", name: "qwen-plus", timestamp: 20 },
+]);
+assert(rewriteLive?.spans[0]?.label === "qwen-plus", "rewrite llm belongs to the plan node");
+assert(rewriteLive?.spans[0]?.endTs == null, "open rewrite llm stays running");
+assert(
+  mainAgentLiveBranch([
+    { kind: "llm", phase: "start", name: "child", timestamp: 21, parent_tool_call_id: "c1", sub_id: 1 },
+  ]) == null,
+  "sub-agent llm is not painted on the plan node",
+);
+
+const nestedRewrite = spansFromLive([
+  { kind: "llm", phase: "start", name: "指代解析", timestamp: 1 },
+  { kind: "llm", phase: "start", name: "planner:doubao", timestamp: 1.1 },
+  {
+    kind: "llm",
+    phase: "end",
+    name: "planner:doubao",
+    timestamp: 170.4,
+    usage: { input_tokens: 800, output_tokens: 40 },
+  },
+  { kind: "llm", phase: "end", name: "指代解析", timestamp: 170.5 },
+]);
+assert(nestedRewrite.length === 1, `rewrite nest folds to one span, got ${nestedRewrite.length}`);
+assert(nestedRewrite[0].label === "指代解析", "outer rewrite label is kept");
+assert(nestedRewrite[0].endTs === 170.5, "rewrite end is not dropped");
+assert(nestedRewrite[0].usage?.input_tokens === 800, "inner usage is copied onto rewrite");
+assert(nestedRewrite.every((span) => span.endTs != null), "no leftover running llm after paired ends");
+
+const stackedOpen = spansFromLive([
+  { kind: "llm", phase: "start", name: "指代解析", timestamp: 1 },
+  { kind: "llm", phase: "start", name: "planner:doubao", timestamp: 2 },
+]);
+assert(stackedOpen.filter((span) => span.endTs == null).length === 2, "unmatched starts stay open");
+
+assert(
+  mainLlmRole({ kind: "llm", label: "指代解析", startTs: 1 }) === "rewrite",
+  "rewrite role",
+);
+assert(
+  mainLlmRole({ kind: "llm", label: "planner:doubao", startTs: 10 }, [
+    { tool_call_id: "c1", tool_name: "sub_agent_tool", started_at: 15000, ended_at: 40000 },
+  ]) === "plan-delegate",
+  "llm before first delegate is 委派",
+);
+assert(
+  mainLlmRole({ kind: "llm", label: "planner:doubao", startTs: 50 }, [
+    { tool_call_id: "c1", tool_name: "sub_agent_tool", started_at: 15000, ended_at: 40000 },
+  ]) === "plan-summarize",
+  "llm after last delegate is 总结",
+);
+
+const thinkMap = thinkingByLlmSpan(
+  [
+    { id: "r", kind: "llm", label: "指代解析", source: "主 Agent", startTs: 1, endTs: 2, failed: false },
+    { id: "p1", kind: "llm", label: "planner", source: "主 Agent", startTs: 3, endTs: 4, failed: false },
+    { id: "p2", kind: "llm", label: "planner", source: "主 Agent", startTs: 10, endTs: 11, failed: false },
+  ],
+  "先委派查询。\n\n共 59 个项目。",
+);
+assert(thinkMap.get("r") == null, "rewrite does not take thinking chunks");
+assert(thinkMap.get("p1") === "先委派查询。", "first planner round");
+assert(thinkMap.get("p2") === "共 59 个项目。", "second planner round");
+
+const summaryForest = buildTrajectoryForest(
+  [
+    {
+      file: "summary.json",
+      role: "main",
+      round_index: 1,
+      events: [
+        { type: "llm_start", model: "planner", timestamp: 1 },
+        {
+          type: "llm_end",
+          timestamp: 2,
+          content: "ok",
+          usage: { input_tokens: 1000, output_tokens: 200 },
+        },
+        {
+          type: "tool_start",
+          tool_name: "sub_agent_tool",
+          tool_call_id: "ok1",
+          timestamp: 3,
+        },
+        { type: "tool_end", tool_call_id: "ok1", timestamp: 4, result: "ok" },
+        {
+          type: "tool_start",
+          tool_name: "sub_agent_tool",
+          tool_call_id: "bad1",
+          timestamp: 5,
+        },
+        { type: "tool_end", tool_call_id: "bad1", timestamp: 6, result: "err", is_error: true },
+      ],
+    },
+  ],
+  [],
+  [
+    {
+      tool_call_id: "ok1",
+      tool_name: "sub_agent_tool",
+      label: "NL2SQL",
+      status: "done",
+      sub_id: 1,
+      stages: [{ key: "final", label: "Final", status: "done", detail: "ok" }],
+    },
+    {
+      tool_call_id: "bad1",
+      tool_name: "sub_agent_tool",
+      label: "NL2SQL",
+      status: "error",
+      sub_id: 2,
+      stages: [{ key: "final", label: "Final", status: "error", detail: "fail" }],
+    },
+  ],
+);
+const summary = summarizeTrajectoryForest(summaryForest);
+assert(summary.llmCalls === 1, "summary counts llm");
+assert(summary.inputTokens === 1000 && summary.outputTokens === 200, "summary sums tokens");
+assert(summary.toolCalls === 2, "summary counts tool branches");
+assert(summary.toolFailed === 1, "summary counts failed tools");
+assert(summary.toolSucceeded === 1, "summary counts succeeded tools");
+assert(summary.toolSuccessRate === 50, "summary success rate");
+assert(formatTokenTotal(1200) === "1.2k", "formatTokenTotal");
+assert(formatTokenTotal(42) === "42", "formatTokenTotal small");
+assert(spanShortLabel("planner:doubao-seed-2-1-turbo-260628") === "planner", "short role");
+assert(spanShortLabel("指代解析") === "指代解析", "zh label unchanged");
+assert(spanShortLabel("qwen-plus") === "qwen-plus", "bare model unchanged");
+assert(
+  spanModelDetail("planner:doubao-seed-2-1-turbo-260628") === "planner:doubao-seed-2-1-turbo-260628",
+  "model detail kept",
+);
+assert(spanModelDetail("qwen-plus") == null, "no detail when not role:model");
 
 console.log("trajectoryModel.test.ts ok");

@@ -71,6 +71,38 @@ def test_filtered_tool_calls_emit_plan_not_token():
     assert "当前有多少个项目？" in plans[0]["data"]["hint"]
 
 
+def test_plan_emits_think_end_so_next_round_can_restart():
+    mapper = MainAgentStreamMapper()
+    first = mapper.iter_events(
+        {
+            "type": "output_msg",
+            "node_name": "planner",
+            "reasoning_content": "需要查库确认项目数量。",
+            "content": "**正在调用以下工具:**\n\n- **sub_agent_tool**\n\n",
+            "tool_calls": [
+                {
+                    "name": "sub_agent_tool",
+                    "args": {"query": "当前有多少个项目？"},
+                }
+            ],
+        }
+    )
+    think = _events_of(first, "think")
+    assert think[-1]["data"]["phase"] == "end"
+    second = mapper.iter_events(
+        {
+            "type": "output_msg",
+            "node_name": "planner",
+            "reasoning_content": "经查询共 59 个。",
+            "content": "当前共 59 个未删除的有效项目。",
+        }
+    )
+    think2 = _events_of(second, "think")
+    assert think2[0]["data"]["phase"] == "start"
+    assert think2[1]["data"]["phase"] == "delta"
+    assert think2[1]["data"]["content"] == "经查询共 59 个。"
+
+
 def test_break_emits_think_end():
     mapper = MainAgentStreamMapper()
     mapper.iter_events(

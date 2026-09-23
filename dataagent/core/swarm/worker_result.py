@@ -197,12 +197,41 @@ def _last_assistant_visible_text(state: dict[str, Any]) -> str:
     return ""
 
 
+_ARTIFACT_PATH_KEYS = (
+    "sql_path",
+    "csv_path",
+    "image_path",
+    "report_path",
+    "recall_path",
+)
+
+
 def _extract_artifacts(state: dict[str, Any]) -> list[str]:
-    """Extract artifact paths from common final-state fields."""
+    """Extract artifact paths from common final-state fields (incl. NL2SQL/plot paths)."""
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        paths.append(text)
+
     raw = state.get("artifacts") or state.get("files") or []
     if isinstance(raw, list):
-        return [str(item) for item in raw]
-    return []
+        for item in raw:
+            add(item)
+    for key in _ARTIFACT_PATH_KEYS:
+        add(state.get(key))
+    images = state.get("images")
+    if isinstance(images, list):
+        for item in images:
+            if isinstance(item, dict):
+                add(item.get("image_path"))
+            else:
+                add(item)
+    return paths
 
 
 def _count_tool_calls(state: dict[str, Any]) -> int:

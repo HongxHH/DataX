@@ -72,7 +72,8 @@ POST_WORKFLOW: []
 HOOKS:
   agent:
     pre:
-      - name: context_reference_rewriter
+      # 暂时关闭指代改写，避免图前 LLM 卡住；需要时取消注释
+      # - name: context_reference_rewriter
     post:
       - name: portraiter
   nodes:

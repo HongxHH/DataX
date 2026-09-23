@@ -15,7 +15,7 @@ import { usePersistedToggle } from "../../components/shared/usePersistedToggle";
 import { ToolTimeline } from "../../components/shared/ToolTimeline";
 import { PromptInventoryControl } from "../../components/chat-copilot/PromptInventoryControl";
 import { isMainAgentUsage, parseContextUsage } from "../../components/chat-copilot/contextUsageModel";
-import { isMainAgentInventory, parsePromptInventory } from "../../components/chat-copilot/promptInventoryModel";
+import { isMainAgentInventory, parsePromptInventory, upsertSubInventory } from "../../components/chat-copilot/promptInventoryModel";
 import { TrajectoryDrawer } from "../../components/chat-copilot/TrajectoryDrawer";
 import type { TrajectoryGroup } from "../../components/chat-copilot/trajectoryModel";
 import { CopilotMessageList } from "../../components/chat-copilot/CopilotMessageList";
@@ -331,6 +331,7 @@ export default function ChatCopilot({
     let lastRewritten = "";
     let lastContextUsage: ContextUsageSnapshot | null = null;
     let lastPromptInventory: PromptInventorySnapshot | null = null;
+    let lastSubInventories: Record<string, PromptInventorySnapshot> = {};
     let lastOtelSpans: SpanEventData[] = [];
     abortRef.current?.abort();
     const abortController = new AbortController();
@@ -346,6 +347,9 @@ export default function ChatCopilot({
         turn_ended_at: Date.now(),
         ...(lastContextUsage ? { context_usage: lastContextUsage } : {}),
         ...(lastPromptInventory ? { prompt_inventory: lastPromptInventory } : {}),
+        ...(Object.keys(lastSubInventories).length > 0
+          ? { sub_prompt_inventories: { ...lastSubInventories } }
+          : {}),
       };
       applyLive(sessionId, (prev) => ({
         ...emptyCopilotLive([...prev.messages, ended]),
@@ -509,9 +513,31 @@ export default function ChatCopilot({
           },
           onPromptInventory: (data) => {
             const parsed = parsePromptInventory(data);
-            if (!parsed || !isMainAgentInventory(parsed)) return;
-            lastPromptInventory = parsed;
-            applyLive(sessionId, (prev) => ({ ...prev, promptInventory: parsed }));
+            if (!parsed) return;
+            if (isMainAgentInventory(parsed)) {
+              lastPromptInventory = parsed;
+              applyLive(sessionId, (prev) => ({
+                ...prev,
+                promptInventory: parsed,
+                activeTurn: prev.activeTurn
+                  ? { ...prev.activeTurn, prompt_inventory: parsed }
+                  : prev.activeTurn,
+              }));
+              return;
+            }
+            lastSubInventories = upsertSubInventory(lastSubInventories, parsed);
+            applyLive(sessionId, (prev) => ({
+              ...prev,
+              activeTurn: prev.activeTurn
+                ? {
+                  ...prev.activeTurn,
+                  sub_prompt_inventories: upsertSubInventory(
+                    prev.activeTurn.sub_prompt_inventories ?? {},
+                    parsed,
+                  ),
+                }
+                : prev.activeTurn,
+            }));
           },
           onSpan: (data) => {
             const span = data as SpanEventData;
@@ -665,7 +691,6 @@ export default function ChatCopilot({
           onSelect={loadSession}
           onNew={handleNewSession}
           onDelete={handleDeleteSession}
-          showUsage
           collapsed={sessionsCollapsed}
           onToggleCollapsed={toggleSessions}
         />
@@ -681,6 +706,7 @@ export default function ChatCopilot({
                 activeTurn={activeTurn}
                 liveDelegations={collectVisibleDelegations(messages, activeTurn)}
                 livePrepLog={planPrepLog}
+                livePlanTools={planTools}
                 live={loading && runningId === activeId}
               />
               {loading && runningId === activeId ? (

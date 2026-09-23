@@ -22,16 +22,16 @@ export function clipThinkingTail(text: string, max = THINKING_CLIP_MAX): string 
 }
 
 const CONFIG_LABELS: Record<string, string> = {
-  "landcheck_nl2sql.yaml": "Landcheck NL2SQL",
+  "landcheck_nl2sql.yaml": "NL2SQL",
   "landcheck_document_recall.yaml": "Document Recall",
   "document_recall_agent.yaml": "Document Recall",
-  "landcheck_plot.yaml": "Landcheck Plot",
-  "landcheck_report.yaml": "Landcheck Report",
+  "landcheck_plot.yaml": "Plot",
+  "landcheck_report.yaml": "Report",
 };
 
 const TOOL_LABELS: Record<string, string> = {
   sub_agent_tool: "子 Agent",
-  nl2sql_sub_agent_tool: "Landcheck NL2SQL",
+  nl2sql_sub_agent_tool: "NL2SQL",
 };
 
 function fileName(path?: string): string {
@@ -42,9 +42,25 @@ export function isSubAgentTool(toolName?: string): boolean {
   return SUB_AGENT_TOOLS.has(String(toolName || ""));
 }
 
-export function workerReuseLabel(block: Pick<DelegationBlock, "sub_id" | "resumed">): string | null {
-  if (block.sub_id == null) return null;
-  return `#${block.sub_id} ${block.resumed ? "复用" : "新建"}`;
+/** Shell display name: drop scenario brand prefix like "Landcheck ". */
+export function displayAgentLabel(label?: string | null): string {
+  const text = String(label || "").trim();
+  if (!text) return "";
+  const stripped = text.replace(/^Landcheck\s+/i, "").trim();
+  return stripped || text;
+}
+
+export function displayPlanText(text?: string | null): string {
+  return String(text || "").replace(/Landcheck\s+/gi, "");
+}
+
+export function workerReuseLabel(
+  block: Pick<DelegationBlock, "sub_id" | "resumed">,
+): string | null {
+  if (block.sub_id == null || block.sub_id <= 0) return null;
+  if (block.resumed === true) return `#${block.sub_id} 复用`;
+  if (block.resumed === false) return `#${block.sub_id} 新建`;
+  return `#${block.sub_id}`;
 }
 
 export function visibleDelegations(delegations: DelegationBlock[] | undefined): DelegationBlock[] {
@@ -75,10 +91,10 @@ export function agentLabelFromConfigPath(configPath?: string, toolName?: string)
   const name = fileName(configPath).toLowerCase();
   if (CONFIG_LABELS[name]) return CONFIG_LABELS[name];
   if (name.includes("document_recall")) return "Document Recall";
-  if (name.includes("plot")) return "Landcheck Plot";
-  if (name.includes("report")) return "Landcheck Report";
-  if (name.includes("nl2sql")) return "Landcheck NL2SQL";
-  return toolLabel(toolName);
+  if (name.includes("plot")) return "Plot";
+  if (name.includes("report")) return "Report";
+  if (name.includes("nl2sql")) return "NL2SQL";
+  return displayAgentLabel(toolLabel(toolName)) || "子 Agent";
 }
 
 export function toolLabel(toolName?: string, configPath?: string): string {
@@ -209,9 +225,11 @@ export function applyDelegationToolEvent(
     next.tool_name = toolName;
   }
   if (agentLabel || configPath) {
-    next.label = agentLabel || toolLabel(toolName, configPath);
+    next.label = displayAgentLabel(agentLabel) || toolLabel(toolName, configPath);
   } else if (toolName && !next.label) {
     next.label = toolLabel(toolName);
+  } else if (next.label) {
+    next.label = displayAgentLabel(next.label) || next.label;
   }
   const subId = Number(data.sub_id);
   if (Number.isInteger(subId) && subId > 0) {
@@ -255,7 +273,7 @@ export function applyDelegationArtifact(
 ): DelegationBlock {
   let next = { ...block };
   if (typeof data.agent_label === "string" && data.agent_label) {
-    next.label = data.agent_label;
+    next.label = displayAgentLabel(data.agent_label) || data.agent_label;
   }
   if (data.kind === "sql" && data.sql) {
     next.sql = String(data.sql);

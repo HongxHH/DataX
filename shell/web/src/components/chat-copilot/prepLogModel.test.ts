@@ -2,6 +2,7 @@ import {
   heartbeatCount,
   PLAN_PREP_LOG_LIMIT,
   prepKind,
+  splitRecallCheckpoint,
   trimPrepLog,
   visiblePrepLines,
 } from "./prepLogModel";
@@ -20,6 +21,14 @@ assert(prepKind("正在规划…") === "heartbeat", "planning hint is heartbeat"
 assert(prepKind("正在同步上下文任务…") === "heartbeat", "sync hint is heartbeat");
 assert(prepKind("正在检索跨会话记忆…") === "heartbeat", "recall start is heartbeat not result");
 assert(prepKind("正在解析问题中的指代（可能调用模型）…") === "heartbeat", "rewrite start is heartbeat");
+
+const recallHit = splitRecallCheckpoint(
+  "跨会话记忆：命中 3 段 · ### 43ca1221 用户查询项目总数，获知当前未删除有效项目共59个",
+);
+assert(recallHit?.headline === "跨会话记忆：命中 3 段", "recall headline drops the preview");
+assert(recallHit?.preview?.includes("43ca1221") === true, "preview stays available for expand");
+assert(splitRecallCheckpoint("跨会话记忆：未命中")?.preview == null, "miss has no preview");
+assert(splitRecallCheckpoint("问句已改写为 西湖") == null, "rewrite is not a recall line");
 
 const mixed = [
   "正在规划…",

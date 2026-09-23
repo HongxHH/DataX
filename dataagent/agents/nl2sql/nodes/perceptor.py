@@ -83,12 +83,14 @@ class PerceptorNode(BaseNL2SQLNode):
                 d, t, _c = parts
                 column_tables.add(f"{d}.{t}")
         dt_desc = self._table_descriptions()
-        joins_raw = self._get_joinable_tables(list(column_tables))
+        # joinable-tables 只返回「入参表集合内部」的边。只传列检索命中表时，
+        # 父表不在集合里，接口会给空数组。所以先问全库 join 图，再按命中表扩 1-hop。
+        joins_raw = self._get_joinable_tables(list(dt_desc.keys()))
         dt_set = set(column_tables)
         for join_entry in joins_raw:
-            for table_id in self._join_table_ids(join_entry):
-                if table_id in dt_desc:
-                    dt_set.add(table_id)
+            table_ids = [table_id for table_id in self._join_table_ids(join_entry) if table_id in dt_desc]
+            if any(table_id in column_tables for table_id in table_ids):
+                dt_set.update(table_ids)
         schema = self._schema_for_tables(dt_set, dt_desc)
         column_table_names = {dt.split(".", 1)[1] for dt in column_tables if "." in dt}
         recalled_tables = {dt.split(".", 1)[1] for dt in dt_set if "." in dt}

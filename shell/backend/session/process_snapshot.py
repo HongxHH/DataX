@@ -6,7 +6,11 @@ from typing import Any
 
 from shell.backend.protocol.context_usage import is_main_agent_usage, normalize_context_usage
 from shell.backend.protocol.events import ShellEventType
-from shell.backend.protocol.prompt_inventory import is_main_agent_inventory, normalize_prompt_inventory
+from shell.backend.protocol.prompt_inventory import (
+    is_main_agent_inventory,
+    normalize_prompt_inventory,
+    put_sub_prompt_inventory,
+)
 from shell.backend.session.clipping import (
     LOGS_MAX,
     MAIN_THINKING_MAX,
@@ -34,6 +38,7 @@ class ProcessSnapshot:
         self.rewritten_query = ""
         self.context_usage: dict[str, Any] | None = None
         self.prompt_inventory: dict[str, Any] | None = None
+        self.sub_prompt_inventories: dict[str, dict[str, Any]] = {}
         self.otel_spans: list[dict[str, Any]] = []
 
     def ingest(self, event_name: str, data: dict[str, Any] | None) -> None:
@@ -122,9 +127,12 @@ class ProcessSnapshot:
 
     def _on_prompt_inventory(self, data: dict[str, Any]) -> None:
         compact = normalize_prompt_inventory(data)
-        if compact is None or not is_main_agent_inventory(compact):
+        if compact is None:
             return
-        self.prompt_inventory = compact
+        if is_main_agent_inventory(compact):
+            self.prompt_inventory = compact
+            return
+        put_sub_prompt_inventory(self.sub_prompt_inventories, compact)
 
     def _on_span(self, data: dict[str, Any]) -> None:
         span = normalize_live_span(data)
@@ -178,6 +186,10 @@ class ProcessSnapshot:
             payload["context_usage"] = dict(self.context_usage)
         if self.prompt_inventory:
             payload["prompt_inventory"] = dict(self.prompt_inventory)
+        if self.sub_prompt_inventories:
+            payload["sub_prompt_inventories"] = {
+                key: dict(value) for key, value in self.sub_prompt_inventories.items()
+            }
         if self.otel_spans:
             payload["otel_spans"] = list(self.otel_spans[-SPANS_MAX:])
         return payload

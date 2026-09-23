@@ -608,6 +608,42 @@ def _load_recall_excerpts(path: Path) -> tuple[list[dict[str, Any]], str]:
     return excerpts, str(payload.get("summary") or "")
 
 
+def _path_text_variants(raw: Any) -> list[str]:
+    text = str(raw or "").strip().strip("`")
+    if not text:
+        return []
+    variants = {text, text.replace("\\", "/"), text.replace("/", "\\")}
+    try:
+        resolved = str(Path(text).expanduser().resolve())
+        variants.add(resolved)
+        variants.add(resolved.replace("\\", "/"))
+        variants.add(resolved.replace("/", "\\"))
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return [item for item in variants if item]
+
+
+def _rewrite_text_paths(text: str, replacements: dict[str, str]) -> str:
+    if not text or not replacements:
+        return text
+    out = text
+    for src in sorted(replacements, key=len, reverse=True):
+        dest = replacements[src]
+        if src and src != dest and src in out:
+            out = out.replace(src, dest)
+    return out
+
+
+def _rewrite_any_paths(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, str):
+        return _rewrite_text_paths(value, replacements)
+    if isinstance(value, list):
+        return [_rewrite_any_paths(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: _rewrite_any_paths(item, replacements) for key, item in value.items()}
+    return value
+
+
 def _collect_candidate_artifact_paths(state: dict[str, Any], assistant_reply: str) -> list[Path]:
     found: list[Path] = []
     seen: set[str] = set()
@@ -625,6 +661,8 @@ def _collect_candidate_artifact_paths(state: dict[str, Any], assistant_reply: st
 
     for key in _PROMOTE_STATE_KEYS:
         _add(state.get(key))
+    for item in state.get("artifacts") or []:
+        _add(item)
     images = state.get("images")
     if isinstance(images, list):
         for item in images:
@@ -634,25 +672,51 @@ def _collect_candidate_artifact_paths(state: dict[str, Any], assistant_reply: st
                 _add(item)
     for match in _ARTIFACT_PATH_RE.findall(assistant_reply or ""):
         _add(match)
+    extra: list[Path] = []
+    for path in found:
+        if path.name not in {"plots.json", "plot.json"} or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, list):
+            continue
+        for item in payload:
+            if isinstance(item, dict):
+                extra.append(Path(str(item.get("image_path") or item.get("path") or "")))
+    for nested in extra:
+        _add(nested)
     return found
 
 
 def _promote_subagent_artifacts_into_parent(
     state: dict[str, Any] | None,
     assistant_reply: str,
-) -> dict[str, Any] | None:
-    """Copy child workspace files into parent ``subagent_output`` and rewrite paths."""
+) -> tuple[dict[str, Any] | None, dict[str, str]]:
+    """Copy child workspace files into parent ``subagent_output`` and rewrite paths.
+
+    Returns ``(state, replacements)``. No sandbox / mkdir failure: unchanged state
+    and empty replacements (no half-update).
+    """
     if not isinstance(state, dict):
-        return state
+        return state, {}
     shared = _parent_shared_output_dir()
     if shared is None:
-        return state
+        logger.warning("subagent artifact promote skipped: no parent sandbox workspace")
+        return state, {}
+
     promoted = dict(state)
+    replacements: dict[str, str] = {}
+    dest_by_src: list[tuple[Path, Path]] = []
     for src in _collect_candidate_artifact_paths(promoted, assistant_reply):
         dest = _promote_file_into_shared(src, shared)
         if dest is None:
             continue
         dest_s = str(dest)
+        dest_by_src.append((src, dest))
+        for variant in _path_text_variants(src):
+            replacements[variant] = dest_s
         suffix = dest.suffix.lower()
         if suffix == ".csv":
             promoted["csv_path"] = dest_s
@@ -660,14 +724,6 @@ def _promote_subagent_artifacts_into_parent(
             promoted["sql_path"] = dest_s
         elif suffix == ".png":
             promoted["image_path"] = dest_s
-            images = promoted.get("images")
-            if not isinstance(images, list):
-                images = []
-            if dest_s not in images and not any(
-                isinstance(item, dict) and item.get("image_path") == dest_s for item in images
-            ):
-                images.append({"image_path": dest_s, "description": ""})
-            promoted["images"] = images
         elif suffix == ".md":
             promoted["report_path"] = dest_s
         elif dest.name == "recall_result.json" or "document_recall" in dest.parts:
@@ -677,24 +733,95 @@ def _promote_subagent_artifacts_into_parent(
                 promoted["excerpts"] = excerpts
             if summary:
                 promoted["recall_summary"] = summary
-        elif suffix == ".json" and dest.name in {"plots.json", "plot.json"}:
-            try:
-                payload = json.loads(dest.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                payload = None
-            if isinstance(payload, list):
-                promoted["images"] = payload
-                first = next((item for item in payload if isinstance(item, dict) and item.get("image_path")), None)
-                if first:
-                    promoted["image_path"] = str(first.get("image_path"))
-    return promoted
+
+    if not replacements:
+        return promoted, {}
+
+    for _src, dest in dest_by_src:
+        if dest.suffix.lower() != ".json" or dest.name not in {"plots.json", "plot.json"}:
+            continue
+        try:
+            payload = json.loads(dest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, list):
+            continue
+        rewritten_images = _rewrite_any_paths(payload, replacements)
+        try:
+            dest.write_text(json.dumps(rewritten_images, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+        promoted["images"] = rewritten_images
+        first = next(
+            (item for item in rewritten_images if isinstance(item, dict) and item.get("image_path")),
+            None,
+        )
+        if first:
+            promoted["image_path"] = str(first.get("image_path"))
+
+    for key in _PROMOTE_STATE_KEYS:
+        raw = promoted.get(key)
+        if isinstance(raw, str) and raw:
+            promoted[key] = _rewrite_text_paths(raw, replacements)
+    images = promoted.get("images")
+    if isinstance(images, list):
+        rewritten: list[Any] = []
+        for item in images:
+            if isinstance(item, dict):
+                next_item = dict(item)
+                for img_key in ("image_path", "path"):
+                    if img_key in next_item:
+                        next_item[img_key] = _rewrite_text_paths(str(next_item[img_key]), replacements)
+                rewritten.append(next_item)
+            elif isinstance(item, str):
+                rewritten.append(_rewrite_text_paths(item, replacements))
+            else:
+                rewritten.append(item)
+        promoted["images"] = rewritten
+    elif promoted.get("image_path"):
+        promoted["images"] = [{"image_path": promoted["image_path"], "description": ""}]
+    artifacts = promoted.get("artifacts")
+    if isinstance(artifacts, list):
+        promoted["artifacts"] = [
+            _rewrite_text_paths(str(item), replacements) if isinstance(item, str) else item
+            for item in artifacts
+        ]
+    stream = promoted.get("stream_message")
+    if isinstance(stream, str):
+        promoted["stream_message"] = _rewrite_text_paths(stream, replacements)
+    return promoted, replacements
+
+
+def _rewrite_worker_result_paths(worker_result: dict[str, Any], replacements: dict[str, str], flex_state: dict[str, Any] | None) -> dict[str, Any]:
+    next_result = dict(worker_result)
+    if replacements:
+        next_result["artifacts"] = [
+            _rewrite_text_paths(str(item), replacements)
+            for item in (next_result.get("artifacts") or [])
+        ]
+        if isinstance(next_result.get("final_answer"), str):
+            next_result["final_answer"] = _rewrite_text_paths(str(next_result["final_answer"]), replacements)
+    if isinstance(flex_state, dict):
+        paths: list[str] = []
+        seen: set[str] = set()
+        for key in _PROMOTE_STATE_KEYS:
+            text = str(flex_state.get(key) or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                paths.append(text)
+        existing = [str(item).strip() for item in (next_result.get("artifacts") or []) if str(item).strip()]
+        next_result["artifacts"] = list(dict.fromkeys([*existing, *paths]))
+    return next_result
 
 
 def _subagent_outcome_to_public_tool_dict(outcome: _SubagentCompletedOutcome) -> dict[str, Any]:
     """Map internal parse outcome to the Executor-facing ``sub_agent_tool`` return dict."""
-    flex_state = _promote_subagent_artifacts_into_parent(outcome.flex_state, str(outcome.assistant_reply or ""))
+    flex_state, replacements = _promote_subagent_artifacts_into_parent(
+        outcome.flex_state,
+        str(outcome.assistant_reply or ""),
+    )
+    assistant_reply = _rewrite_text_paths(str(outcome.assistant_reply or "").strip(), replacements)
     summary = _flex_state_planner_summary(flex_state)
-    assistant_reply = str(outcome.assistant_reply or "").strip()
     if not assistant_reply and summary:
         assistant_reply = summary
     artifact_note = _flex_state_artifact_note(flex_state or {})
@@ -702,18 +829,26 @@ def _subagent_outcome_to_public_tool_dict(outcome: _SubagentCompletedOutcome) ->
         assistant_reply = f"{assistant_reply}\n\n{artifact_note}" if assistant_reply else artifact_note
 
     worker_result: Any = outcome.worker_result
-    if isinstance(worker_result, dict) and assistant_reply:
-        worker_result = dict(worker_result)
-        worker_result["final_answer"] = assistant_reply
+    if isinstance(worker_result, dict):
+        worker_result = _rewrite_worker_result_paths(worker_result, replacements, flex_state if isinstance(flex_state, dict) else None)
+        if assistant_reply:
+            worker_result["final_answer"] = assistant_reply
+
+    resumed = None
+    if isinstance(worker_result, dict) and "resumed" in worker_result:
+        resumed = bool(worker_result["resumed"])
 
     if outcome.raw_stdout_for_llm is not None:
-        return {
+        payload = {
             "original_msg": outcome.raw_stdout_for_llm,
             "frontend_msg": assistant_reply or summary,
             "state": flex_state,
             "sub_id": outcome.sub_id,
         }
-    return {
+        if resumed is not None:
+            payload["resumed"] = resumed
+        return payload
+    payload = {
         "original_msg": worker_result,
         "frontend_msg": assistant_reply or summary or str(
             (worker_result.get("final_answer") if isinstance(worker_result, dict) else "") or ""
@@ -721,6 +856,9 @@ def _subagent_outcome_to_public_tool_dict(outcome: _SubagentCompletedOutcome) ->
         "state": flex_state,
         "sub_id": outcome.sub_id,
     }
+    if resumed is not None:
+        payload["resumed"] = resumed
+    return payload
 
 
 def reset_subagent_runtime_context(token: contextvars.Token) -> None:

@@ -38,6 +38,12 @@ class Result:
 class NL2SQLState(BaseState):
     question: str
 
+    # runtime identity (must be declared so LangGraph keeps them across nodes)
+    user_id: str
+    session_id: str
+    run_id: int
+    sub_id: int
+
     # output
     sql: str
     confidence: float
@@ -87,6 +93,10 @@ def get_default_state(question: str, **override) -> NL2SQLState:
     default_state = {
         "messages": [],
         "question": question,
+        "user_id": "",
+        "session_id": "",
+        "run_id": 0,
+        "sub_id": 0,
         "sql": "",
         "confidence": 0.0,
         "columns": None,

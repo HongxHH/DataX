@@ -50,19 +50,27 @@ def persist_nl2sql_result(
     run_id: Any = 0,
     sub_id: Any = None,
 ) -> dict[str, Any]:
-    """Write ``nl2sql/<run_id>[_sub_id]/query.sql`` and ``result.csv`` under workspace.
+    """Write ``nl2sql/<run_id>[_<sub_id>]/query.sql`` and ``result.csv`` under workspace.
 
     Preview row counts stay in graph state; this writes the full ``rows`` sequence
     up to ``MAX_PERSIST_ROWS``. Missing workspace (and no shared output dir) or empty SQL skips persist.
+
+    A positive worker ``sub_id`` is required when sharing ``subagent_output``
+    (env ``DATAAGENT_SUBAGENT_OUTPUT_DIR``) so parallel workers cannot silently
+    share ``nl2sql/<run_id>/``. Standalone NL2SQL (no shared dir, ``sub_id`` 0)
+    still writes ``nl2sql/<run_id>/``.
     """
     sql_text = str(sql or "").strip()
     root = resolve_persist_workspace(workspace)
     if not sql_text or root is None:
         return {}
-    stamp = str(run_id if run_id is not None else 0)
-    if sub_id is not None and str(sub_id).strip() != "":
-        stamp = f"{stamp}_{sub_id}"
-    run_dir = root / "nl2sql" / stamp
+    worker = _positive_sub_id(sub_id)
+    shared = os.getenv(SUBAGENT_OUTPUT_DIR_ENV, "").strip()
+    if worker is None and shared:
+        raise ValueError(
+            f"nl2sql persist requires a positive worker sub_id when sharing subagent_output, got {sub_id!r}"
+        )
+    run_dir = root / "nl2sql" / persist_run_stamp(run_id, worker)
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -108,6 +116,28 @@ def persist_nl2sql_result(
         truncated,
     )
     return payload
+
+
+def persist_run_stamp(run_id: Any, sub_id: Any = None) -> str:
+    """Directory name under ``nl2sql/``; append a positive worker ``sub_id`` when present."""
+    stamp = str(run_id if run_id is not None else 0)
+    worker = _positive_sub_id(sub_id)
+    if worker is None:
+        return stamp
+    return f"{stamp}_{worker}"
+
+
+def _positive_sub_id(sub_id: Any) -> int | None:
+    if sub_id is None:
+        return None
+    text = str(sub_id).strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def persist_summary_line(payload: dict[str, Any]) -> str:

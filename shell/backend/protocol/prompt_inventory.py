@@ -11,6 +11,7 @@ _NODE_TYPE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,31}$")
 _WORKERS_MAX = 10
 _IR_SUMMARIES_MAX = 20
 _IR_NODES_MAX = 8
+_SUB_INVENTORIES_MAX = 20
 
 
 def normalize_prompt_inventory(data: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -48,6 +49,35 @@ def normalize_prompt_inventory(data: dict[str, Any] | None) -> dict[str, Any] | 
 def is_main_agent_inventory(snapshot: dict[str, Any]) -> bool:
     """True when the snapshot belongs to the main agent (no positive sub_id)."""
     return _positive_int(snapshot.get("sub_id")) is None
+
+
+def put_sub_prompt_inventory(
+    store: dict[str, dict[str, Any]],
+    compact: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Keep the latest snapshot per sub_id, dropping the oldest when over cap."""
+    sub_id = _positive_int(compact.get("sub_id"))
+    if sub_id is None:
+        return store
+    key = str(sub_id)
+    store.pop(key, None)
+    store[key] = compact
+    while len(store) > _SUB_INVENTORIES_MAX:
+        store.pop(next(iter(store)))
+    return store
+
+
+def normalize_sub_prompt_inventories(raw: Any) -> dict[str, dict[str, Any]] | None:
+    """Sanitize a sub_id → compact inventory map. Drops main-agent snapshots."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, dict[str, Any]] = {}
+    for value in raw.values():
+        compact = normalize_prompt_inventory(value) if isinstance(value, dict) else None
+        if compact is None or is_main_agent_inventory(compact):
+            continue
+        put_sub_prompt_inventory(out, compact)
+    return out or None
 
 
 def _normalize_workers(raw: Any) -> list[dict[str, Any]]:

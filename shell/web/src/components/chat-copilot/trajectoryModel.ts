@@ -1,6 +1,6 @@
 import type { SpanEventData } from "../../protocol/events";
 import type { DelegationBlock } from "../../types";
-import { isSubAgentTool } from "./delegationState";
+import { displayAgentLabel, isSubAgentTool } from "./delegationState";
 import { pipelineStepsFromDelegation } from "./pipelineSteps";
 
 export interface TrajectoryEvent {
@@ -179,9 +179,53 @@ function liveSubId(event: LiveSpanEvent): number | undefined {
   return event.sub_id != null && event.sub_id > 0 ? event.sub_id : undefined;
 }
 
+function isRewriteLlmLabel(label: string | undefined): boolean {
+  const text = label ?? "";
+  return text.includes("指代解析") || text.includes("意图理解");
+}
+
+function closeStackedLlm(openLlms: TrajectorySpan[], name: string | undefined): TrajectorySpan | undefined {
+  if (openLlms.length === 0) return undefined;
+  if (name) {
+    for (let i = openLlms.length - 1; i >= 0; i -= 1) {
+      if (openLlms[i].label === name) {
+        const [matched] = openLlms.splice(i, 1);
+        return matched;
+      }
+    }
+  }
+  return openLlms.pop();
+}
+
+function spanWindowContains(outer: TrajectorySpan, inner: TrajectorySpan): boolean {
+  if (outer.startTs == null || inner.startTs == null) return false;
+  const outerEnd = outer.endTs ?? Number.POSITIVE_INFINITY;
+  const innerEnd = inner.endTs ?? Number.POSITIVE_INFINITY;
+  return inner.startTs >= outer.startTs && innerEnd <= outerEnd;
+}
+
+/** Drop planner-model spans nested inside a rewrite placeholder (same invoke, two names). */
+export function foldRewriteNestedLlms(spans: TrajectorySpan[]): TrajectorySpan[] {
+  const rewrites = spans.filter((span) => span.kind === "llm" && isRewriteLlmLabel(span.label));
+  if (rewrites.length === 0) return spans;
+  const drop = new Set<string>();
+  for (const rewrite of rewrites) {
+    for (const span of spans) {
+      if (span.id === rewrite.id || span.kind !== "llm" || isRewriteLlmLabel(span.label)) continue;
+      if (span.endTs == null) continue;
+      if (!spanWindowContains(rewrite, span)) continue;
+      if (span.failed) rewrite.failed = true;
+      if (span.usage) rewrite.usage = span.usage;
+      if (span.endTs != null && rewrite.endTs == null) rewrite.endTs = span.endTs;
+      drop.add(span.id);
+    }
+  }
+  return drop.size === 0 ? spans : spans.filter((span) => !drop.has(span.id));
+}
+
 export function spansFromLive(events: LiveSpanEvent[]): TrajectorySpan[] {
   const spans: TrajectorySpan[] = [];
-  let openLlm: TrajectorySpan | null = null;
+  const openLlms: TrajectorySpan[] = [];
   const openTools = new Map<string, TrajectorySpan>();
   events.forEach((event, index) => {
     const kind = event.kind === "tool" ? "tool" : "llm";
@@ -205,7 +249,7 @@ export function spansFromLive(events: LiveSpanEvent[]): TrajectorySpan[] {
       };
       spans.push(span);
       if (kind === "llm") {
-        openLlm = span;
+        openLlms.push(span);
       } else {
         openTools.set(toolCallId || id, span);
       }
@@ -214,16 +258,15 @@ export function spansFromLive(events: LiveSpanEvent[]): TrajectorySpan[] {
     if (event.phase !== "end") return;
     const target =
       kind === "llm"
-        ? openLlm
+        ? closeStackedLlm(openLlms, event.name)
         : (toolCallId && openTools.get(toolCallId)) || spans.filter((item) => item.kind === kind).at(-1);
     if (!target) return;
     if (typeof event.timestamp === "number") target.endTs = event.timestamp;
     if (event.failed) target.failed = true;
     if (event.usage) target.usage = event.usage;
-    if (kind === "llm") openLlm = null;
-    else if (toolCallId) openTools.delete(toolCallId);
+    if (kind !== "llm" && toolCallId) openTools.delete(toolCallId);
   });
-  return spans.sort((a, b) => (a.startTs ?? 0) - (b.startTs ?? 0));
+  return foldRewriteNestedLlms(spans.sort((a, b) => (a.startTs ?? 0) - (b.startTs ?? 0)));
 }
 
 export function visibleTrajectorySpans(
@@ -243,6 +286,25 @@ export function spanKindLabel(kind: TrajectorySpanKind): string {
   return "阶段";
 }
 
+/** `planner:doubao-…` → `planner`; labels without role:model stay unchanged. */
+export function spanShortLabel(label: string): string {
+  const trimmed = label.trim();
+  const idx = trimmed.indexOf(":");
+  if (idx <= 0) return trimmed;
+  const head = trimmed.slice(0, idx).trim();
+  const rest = trimmed.slice(idx + 1).trim();
+  if (!head || !rest) return trimmed;
+  if (!/^[A-Za-z][\w.-]*$/.test(head)) return trimmed;
+  return head;
+}
+
+/** Full `role:model` string when short label hid the model part. */
+export function spanModelDetail(label: string): string | null {
+  const trimmed = label.trim();
+  if (!trimmed) return null;
+  return spanShortLabel(trimmed) !== trimmed ? trimmed : null;
+}
+
 export function formatSpanDuration(start: number | null, end: number | null): string {
   if (start == null || end == null || end < start) return "";
   const ms = Math.round((end - start) * 1000);
@@ -255,12 +317,72 @@ export function spanIsRunning(span: TrajectorySpan): boolean {
   return span.endTs == null && span.startTs != null;
 }
 
+export type MainLlmRole = "rewrite" | "plan-delegate" | "plan-summarize" | "plan";
+
+export function mainLlmRole(span: Pick<TrajectorySpan, "kind" | "label" | "startTs">, delegations: DelegationBlock[] = []): MainLlmRole {
+  if (span.kind !== "llm") return "plan";
+  if (isRewriteLlmLabel(span.label)) return "rewrite";
+  const starts = delegations.map((block) => block.started_at).filter((value): value is number => value != null);
+  const ends = delegations.map((block) => block.ended_at).filter((value): value is number => value != null);
+  const firstStart = starts.length > 0 ? Math.min(...starts) / 1000 : undefined;
+  const allEnded = delegations.length > 0 && ends.length === delegations.length;
+  const lastEnd = allEnded ? Math.max(...ends) / 1000 : undefined;
+  if (firstStart != null && span.startTs != null && span.startTs < firstStart) return "plan-delegate";
+  if (lastEnd != null && span.startTs != null && span.startTs >= lastEnd) return "plan-summarize";
+  return "plan";
+}
+
+export function mainLlmRoleLabel(role: MainLlmRole): string {
+  if (role === "rewrite") return "指代解析";
+  if (role === "plan-delegate") return "规划·委派";
+  if (role === "plan-summarize") return "规划·总结";
+  return "规划";
+}
+
+export function splitThinkingRounds(text: string | undefined): string[] {
+  if (!text?.trim()) return [];
+  return text
+    .split(/\n\n+/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+}
+
+/** Zip ReAct thinking rounds onto planner LLM spans (rewrite has no streamed thinking). */
+export function thinkingByLlmSpan(spans: TrajectorySpan[], thinking: string | undefined): Map<string, string> {
+  const chunks = splitThinkingRounds(thinking);
+  const planner = spans.filter((span) => span.kind === "llm" && !isRewriteLlmLabel(span.label));
+  const assigned = new Map<string, string>();
+  planner.forEach((span, index) => {
+    if (index < planner.length - 1) {
+      const chunk = chunks[index];
+      if (chunk) assigned.set(span.id, chunk);
+      return;
+    }
+    const rest = chunks.slice(index).join("\n\n").trim();
+    if (rest) assigned.set(span.id, rest);
+  });
+  return assigned;
+}
+
 function isSubAgentToolSpan(span: TrajectorySpan): boolean {
   return span.kind === "tool" && isSubAgentTool(span.label);
 }
 
 function isMainRootSpan(span: TrajectorySpan): boolean {
   return !span.parentToolCallId && span.subId == null && !isSubAgentToolSpan(span);
+}
+
+export function mainAgentLiveBranch(live: LiveSpanEvent[] = []): TrajectoryBranch | undefined {
+  const spans = spansFromLive(live).filter(isMainRootSpan);
+  if (spans.length === 0) return undefined;
+  return {
+    id: "plan",
+    title: "主 Agent",
+    source: "主 Agent",
+    spans,
+    children: [],
+    failed: spans.some((span) => span.failed),
+  };
 }
 
 function inToolWindow(span: TrajectorySpan, tool: TrajectorySpan): boolean {
@@ -309,7 +431,8 @@ function branchTitle(
 ): string {
   const block = delegationForTool(toolId, delegations);
   const subId = block?.sub_id ?? children.find((span) => span.subId != null)?.subId;
-  const name = block?.label || (subId != null ? "子 Agent" : toolSpan?.label || "子 Agent");
+  const name = displayAgentLabel(block?.label)
+    || (subId != null ? "子 Agent" : displayAgentLabel(toolSpan?.label) || "子 Agent");
   return subId != null ? `${name} · #${subId}` : name;
 }
 
@@ -456,6 +579,89 @@ export function findTrajectoryBranch(forest: TrajectoryBranch[], id: string): Tr
     if (nested) return nested;
   }
   return undefined;
+}
+
+export interface TrajectorySessionSummary {
+  rounds: number;
+  llmCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  toolCalls: number;
+  toolFailed: number;
+  toolRunning: number;
+  toolSucceeded: number;
+  /** 0–100; null when no completed tool calls yet. */
+  toolSuccessRate: number | null;
+}
+
+/** Aggregate session stats from the same forest the drawer renders. */
+export function summarizeTrajectoryForest(forest: TrajectoryBranch[]): TrajectorySessionSummary {
+  let rounds = 0;
+  let llmCalls = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let toolCalls = 0;
+  let toolFailed = 0;
+  let toolRunning = 0;
+
+  const visitSpan = (span: TrajectorySpan) => {
+    if (span.kind === "llm") {
+      llmCalls += 1;
+      inputTokens += span.usage?.input_tokens ?? 0;
+      outputTokens += span.usage?.output_tokens ?? 0;
+      return;
+    }
+    if (span.kind !== "tool") return;
+    toolCalls += 1;
+    if (spanIsRunning(span)) toolRunning += 1;
+    else if (span.failed) toolFailed += 1;
+  };
+
+  const visitToolBranch = (branch: TrajectoryBranch) => {
+    toolCalls += 1;
+    const running = branch.spans.some(
+      (span) => span.kind !== "stage" && spanIsRunning(span),
+    );
+    if (branch.failed) toolFailed += 1;
+    else if (running) toolRunning += 1;
+    for (const span of branch.spans) visitSpan(span);
+    for (const child of branch.children) visitToolBranch(child);
+  };
+
+  for (const branch of forest) {
+    if (isRoundBranch(branch)) {
+      rounds += 1;
+      for (const span of branch.spans) visitSpan(span);
+      for (const child of branch.children) visitToolBranch(child);
+      continue;
+    }
+    for (const span of branch.spans) visitSpan(span);
+    for (const child of branch.children) visitToolBranch(child);
+  }
+
+  const toolCompleted = Math.max(0, toolCalls - toolRunning);
+  const toolSucceeded = Math.max(0, toolCompleted - toolFailed);
+  const toolSuccessRate =
+    toolCompleted > 0 ? Math.round((toolSucceeded / toolCompleted) * 100) : null;
+
+  return {
+    rounds,
+    llmCalls,
+    inputTokens,
+    outputTokens,
+    toolCalls,
+    toolFailed,
+    toolRunning,
+    toolSucceeded,
+    toolSuccessRate,
+  };
+}
+
+export function formatTokenTotal(total: number): string {
+  if (!Number.isFinite(total) || total <= 0) return "0";
+  if (total < 1000) return String(Math.round(total));
+  if (total < 10000) return `${(total / 1000).toFixed(1)}k`;
+  return `${Math.round(total / 1000)}k`;
 }
 
 export function buildTrajectoryForest(

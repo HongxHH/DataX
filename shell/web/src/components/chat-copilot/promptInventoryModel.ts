@@ -2,13 +2,17 @@ import type {
   PackedIrSummary,
   PackedRecallStatus,
   PackedWorkerCard,
+  PlanToolItem,
   PromptInventorySnapshot,
 } from "../../protocol/events";
 import type { ContextUsageSnapshot } from "../../protocol/events";
 import type { ChatMessage, DelegationBlock } from "../../types";
+import { displayAgentLabel } from "./delegationState";
 import { historyChip, usagePartShares, type HistoryChip, type UsagePartShare } from "./contextUsageModel";
 
 export type InventorySource = "packed" | "inferred";
+
+export const IR_EMPTY_DETAIL = "本轮历史仍是工具原文，未做 IR 压缩。";
 
 export interface PackedWorker {
   key: string;
@@ -17,6 +21,7 @@ export interface PackedWorker {
   hasError?: boolean;
   label: string;
   status?: string;
+  summary?: string;
   artifacts: string[];
 }
 
@@ -40,6 +45,15 @@ export interface PackedFlags {
   skillCount: number;
   hasPlan: boolean;
   hasMemory: boolean;
+}
+
+export type AssemblyScope = "main" | "sub";
+export type AssemblySlotKind = "parts" | "history" | "ir" | "worker" | "flags" | "recall" | "rewrite";
+
+export interface AssemblySlot {
+  kind: AssemblySlotKind;
+  title: string;
+  badge?: string;
 }
 
 export interface PromptInventory {
@@ -86,13 +100,70 @@ export function isMainAgentInventory(snapshot: PromptInventorySnapshot): boolean
   return snapshot.sub_id == null || snapshot.sub_id <= 0;
 }
 
-export function collectPackedWorkers(delegations: DelegationBlock[]): PackedWorker[] {
+const SUB_INVENTORIES_MAX = 20;
+
+export function parseSubPromptInventories(raw: unknown): Record<string, PromptInventorySnapshot> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  let out: Record<string, PromptInventorySnapshot> = {};
+  for (const value of Object.values(raw as Record<string, unknown>)) {
+    const parsed = parsePromptInventory(value);
+    if (!parsed || isMainAgentInventory(parsed)) continue;
+    out = upsertSubInventory(out, parsed);
+  }
+  return out;
+}
+
+export function upsertSubInventory(
+  store: Record<string, PromptInventorySnapshot>,
+  snapshot: PromptInventorySnapshot,
+): Record<string, PromptInventorySnapshot> {
+  if (isMainAgentInventory(snapshot) || snapshot.sub_id == null) return store;
+  const key = String(snapshot.sub_id);
+  const next: Record<string, PromptInventorySnapshot> = { ...store };
+  delete next[key];
+  next[key] = snapshot;
+  const keys = Object.keys(next);
+  if (keys.length <= SUB_INVENTORIES_MAX) return next;
+  for (const drop of keys.slice(0, keys.length - SUB_INVENTORIES_MAX)) {
+    delete next[drop];
+  }
+  return next;
+}
+
+export function subInventoryOf(
+  map: Record<string, PromptInventorySnapshot> | undefined,
+  subId: number | undefined | null,
+): PromptInventorySnapshot | undefined {
+  if (subId == null || subId <= 0 || !map) return undefined;
+  return map[String(subId)];
+}
+
+export function irCountBadge(snapshot?: PromptInventorySnapshot | null): string | undefined {
+  const count = snapshot?.ir_summary_count ?? 0;
+  if (count <= 0) return undefined;
+  return `IR×${count}`;
+}
+
+export function inventoryChipForAgent(
+  subId: number | undefined | null,
+  inventories: Record<string, PromptInventorySnapshot> | undefined,
+): { key: string; label: string } | undefined {
+  const badge = irCountBadge(subInventoryOf(inventories, subId));
+  if (!badge) return undefined;
+  return { key: "ir", label: badge };
+}
+
+export function collectPackedWorkers(
+  delegations: DelegationBlock[],
+  planTools: PlanToolItem[] = [],
+): PackedWorker[] {
   const byKey = new Map<string, PackedWorker>();
   const order: string[] = [];
-  for (const block of delegations) {
+  delegations.forEach((block, index) => {
     const subId = block.sub_id != null && block.sub_id > 0 ? block.sub_id : null;
     const key = subId != null ? `id-${subId}` : `call-${block.tool_call_id || order.length}`;
     const incoming = artifactLabels(block);
+    const summary = workerQuerySummary(block, planTools[index]);
     const existing = byKey.get(key);
     if (!existing) {
       order.push(key);
@@ -100,33 +171,116 @@ export function collectPackedWorkers(delegations: DelegationBlock[]): PackedWork
         key,
         sub_id: subId,
         resumed: block.resumed,
-        label: block.label?.trim() || "子 Agent",
+        label: displayAgentLabel(block.label) || "子 Agent",
         status: block.status,
+        summary,
         artifacts: incoming,
       });
-      continue;
+      return;
     }
     const idx = order.indexOf(key);
     if (idx >= 0) order.splice(idx, 1);
     order.push(key);
-    if (block.resumed != null) existing.resumed = block.resumed;
-    if (block.label?.trim()) existing.label = block.label.trim();
+    existing.resumed = block.resumed;
+    if (block.label?.trim()) existing.label = displayAgentLabel(block.label) || existing.label;
     if (block.status) existing.status = block.status;
+    if (summary) existing.summary = summary;
     for (const item of incoming) {
       if (!existing.artifacts.includes(item)) existing.artifacts.push(item);
     }
-  }
+  });
   return order.map((id) => byKey.get(id)!).reverse();
 }
 
-export function workersFromPacked(cards: PackedWorkerCard[]): PackedWorker[] {
-  return cards.map((card) => ({
-    key: `id-${card.sub_id}`,
-    sub_id: card.sub_id,
-    hasError: card.has_error,
-    label: "Worker",
-    artifacts: card.artifact_count > 0 ? [`${card.artifact_count} 个产物`] : [],
-  }));
+export function workerSummariesBySubId(
+  messages: ChatMessage[],
+  activeTurn?: ChatMessage | null,
+  liveDelegations: DelegationBlock[] = [],
+  livePlanTools: PlanToolItem[] = [],
+  live = false,
+): Map<number, string> {
+  const map = new Map<number, string>();
+  const absorb = (delegations: DelegationBlock[] | undefined, planTools: PlanToolItem[]) => {
+    const blocks = Array.isArray(delegations) ? delegations : [];
+    blocks.forEach((block, index) => {
+      const subId = block.sub_id != null && block.sub_id > 0 ? block.sub_id : null;
+      if (subId == null) return;
+      const summary = workerQuerySummary(block, planTools[index]);
+      if (summary) map.set(subId, summary);
+    });
+  };
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    absorb(message.delegations, message.plan_tools ?? []);
+  }
+  if (activeTurn) absorb(activeTurn.delegations, activeTurn.plan_tools ?? []);
+  if (live) absorb(liveDelegations, livePlanTools);
+  return map;
+}
+
+export function mergePackedWorkers(
+  cards: PackedWorkerCard[] | undefined,
+  delegations: DelegationBlock[],
+  planTools: PlanToolItem[] = [],
+  summariesBySubId: Map<number, string> = new Map(),
+): PackedWorker[] {
+  const live = applyWorkerSummaries(collectPackedWorkers(delegations, planTools), summariesBySubId);
+  if (!cards || cards.length === 0) return live;
+  const byId = new Map<number, PackedWorker>();
+  for (const worker of live) {
+    if (worker.sub_id != null) byId.set(worker.sub_id, worker);
+  }
+  return cards.map((card) => {
+    const overlay = byId.get(card.sub_id);
+    const countLabel = card.artifact_count > 0 ? [`${card.artifact_count} 个产物`] : [];
+    return {
+      key: `id-${card.sub_id}`,
+      sub_id: card.sub_id,
+      hasError: card.has_error === true || overlay?.hasError === true,
+      label: overlay?.label || "Worker",
+      status: overlay?.status,
+      resumed: overlay?.resumed,
+      summary: overlay?.summary ?? summariesBySubId.get(card.sub_id),
+      artifacts: overlay && overlay.artifacts.length > 0 ? overlay.artifacts : countLabel,
+    };
+  });
+}
+
+function applyWorkerSummaries(
+  workers: PackedWorker[],
+  summariesBySubId: Map<number, string>,
+): PackedWorker[] {
+  if (summariesBySubId.size === 0) return workers;
+  return workers.map((worker) => {
+    if (worker.sub_id == null) return worker;
+    const summary = summariesBySubId.get(worker.sub_id);
+    return summary ? { ...worker, summary } : worker;
+  });
+}
+
+export function workerQuerySummary(
+  block: Pick<DelegationBlock, "sql">,
+  planTool?: Pick<PlanToolItem, "args_summary"> | null,
+): string | undefined {
+  const fromPlan = planTool?.args_summary?.trim();
+  if (fromPlan) return clipInventoryText(fromPlan, 96);
+  const sql = block.sql?.replace(/\s+/g, " ").trim();
+  if (!sql) return undefined;
+  return clipInventoryText(sql, 96);
+}
+
+export function resolvePlanTools(
+  messages: ChatMessage[],
+  activeTurn: ChatMessage | null | undefined,
+  liveTools: PlanToolItem[] = [],
+): PlanToolItem[] {
+  if (liveTools.length > 0) return liveTools;
+  if (activeTurn?.plan_tools?.length) return activeTurn.plan_tools;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const tools = messages[i]?.plan_tools;
+    if (messages[i]?.role === "assistant" && tools?.length) return tools;
+  }
+  return [];
 }
 
 export function parseRecallCheckpoint(prepLog: string[]): PackedRecall | null {
@@ -230,23 +384,85 @@ export function resolvePackedInventory(
 }
 
 export function buildPromptInventory(input: {
-  usage: ContextUsageSnapshot | null | undefined;
+  usage?: ContextUsageSnapshot | null;
   packed?: PromptInventorySnapshot | null;
   delegations: DelegationBlock[];
+  planTools?: PlanToolItem[];
+  messages?: ChatMessage[];
+  activeTurn?: ChatMessage | null;
+  live?: boolean;
   prepLog: string[];
   rewrittenQuery?: string | null;
 }): PromptInventory {
-  const packed = input.packed && isMainAgentInventory(input.packed) ? input.packed : null;
+  const packed = input.packed ?? null;
+  const planTools = input.planTools ?? [];
+  const summaries = workerSummariesBySubId(
+    input.messages ?? [],
+    input.activeTurn,
+    input.delegations,
+    planTools,
+    Boolean(input.live),
+  );
   return {
     source: packed ? "packed" : "inferred",
     history: historyExplain(input.usage, packed),
     parts: input.usage ? usagePartShares(input.usage) : null,
-    workers: packed ? workersFromPacked(packed.workers) : collectPackedWorkers(input.delegations),
+    workers: packed
+      ? mergePackedWorkers(packed.workers, input.delegations, planTools, summaries)
+      : applyWorkerSummaries(collectPackedWorkers(input.delegations, planTools), summaries),
     recall: packedRecall(packed, parseRecallCheckpoint(input.prepLog)),
     rewrittenQuery: parseRewrittenQuery(input.prepLog, input.rewrittenQuery),
     ir: packed ? irFromPacked(packed) : null,
     flags: packed ? flagsFromPacked(packed) : null,
   };
+}
+
+export function assemblySlots(inventory: PromptInventory, scope: AssemblyScope = "main"): AssemblySlot[] {
+  const slots: AssemblySlot[] = [];
+  if (scope === "main" && inventory.parts && inventory.parts.length > 0) {
+    slots.push({ kind: "parts", title: "分块" });
+  }
+  if (scope === "main" && inventory.history) {
+    slots.push({ kind: "history", title: "历史", badge: inventory.history.chip.label });
+  }
+  if (inventory.ir) {
+    slots.push({
+      kind: "ir",
+      title: "IR",
+      badge: inventory.ir.count > 0 ? `×${inventory.ir.count}` : undefined,
+    });
+  }
+  if (scope === "main") {
+    slots.push({
+      kind: "worker",
+      title: "Worker",
+      badge: inventory.workers.length > 0 ? String(inventory.workers.length) : undefined,
+    });
+  }
+  if (
+    inventory.flags &&
+    (scope === "main" ||
+      inventory.flags.skillCount > 0 ||
+      inventory.flags.hasPlan ||
+      inventory.flags.hasMemory)
+  ) {
+    slots.push({ kind: "flags", title: "其它槽位" });
+  }
+  if (inventory.recall) {
+    slots.push({ kind: "recall", title: "召回" });
+  }
+  if (scope === "main" && inventory.rewrittenQuery) {
+    slots.push({ kind: "rewrite", title: "问句改写" });
+  }
+  return slots;
+}
+
+export function shouldShowAssembly(inventory: PromptInventory, scope: AssemblyScope = "main"): boolean {
+  const slots = assemblySlots(inventory, scope);
+  if (slots.length === 0) return false;
+  if (scope === "sub") return inventory.source === "packed";
+  if (inventory.source === "packed") return true;
+  return inventory.workers.length > 0 || Boolean(inventory.recall) || Boolean(inventory.rewrittenQuery);
 }
 
 function packedRecall(
@@ -339,8 +555,8 @@ function clipInventoryText(text: string, max = 140): string {
 
 function artifactLabels(block: DelegationBlock): string[] {
   const labels: string[] = [];
-  if (block.sql) labels.push("SQL");
-  if (block.columns && block.columns.length > 0) labels.push("表");
+  if (block.sql || block.sql_path) labels.push("SQL");
+  if ((block.columns && block.columns.length > 0) || block.csv_path) labels.push("表");
   if (block.excerpts && block.excerpts.length > 0) labels.push("摘录");
   if (block.image_path || (block.images && block.images.length > 0)) labels.push("图");
   if (block.report_path) labels.push("报告");

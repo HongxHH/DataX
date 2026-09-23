@@ -71,4 +71,18 @@ const packedFromMsg = liveBundleFromMessages(withPacked);
 assert(packedFromMsg.promptInventory?.ir_summary_count === 1, "packed from last assistant");
 assert(packedFromMsg.promptInventory?.workers[0].sub_id === 11, "packed worker id");
 
+const withSubPacked: ChatMessage[] = [
+  { role: "user", content: "查房间" },
+  {
+    role: "assistant",
+    content: "12 间",
+    sub_prompt_inventories: {
+      "7": { ir_summary_count: 2, workers: [], sub_id: 7 },
+    },
+  },
+];
+const subPackedFromMsg = liveBundleFromMessages(withSubPacked);
+assert(subPackedFromMsg.promptInventory === null, "sub map is not the main packed bar");
+assert(subPackedFromMsg.messages.at(-1)?.sub_prompt_inventories?.["7"]?.ir_summary_count === 2, "sub map stays on message");
+
 console.log("copilotLive.test.ts ok");

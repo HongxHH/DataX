@@ -8,33 +8,48 @@ import {
   useNodesInitialized,
   useReactFlow,
   useStore,
+  useStoreApi,
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { PlanToolItem, SpanEventData, ThinkPhase } from "../../protocol/events";
+import type { PlanToolItem, PromptInventorySnapshot, SpanEventData, ThinkPhase } from "../../protocol/events";
 import type { DelegationBlock } from "../../types";
+import { AssemblyPanel } from "./AssemblyPanel";
+import {
+  buildPromptInventory,
+  inventoryChipForAgent,
+  shouldShowAssembly,
+  subInventoryOf,
+} from "./promptInventoryModel";
 import {
   buildTrajectoryForest,
   findTrajectoryBranch,
   formatSpanDuration,
+  mainAgentLiveBranch,
+  mainLlmRole,
+  mainLlmRoleLabel,
   spanIsRunning,
   spanKindLabel,
+  thinkingByLlmSpan,
   type TrajectoryBranch,
   type TrajectoryGroup,
 } from "./trajectoryModel";
 import { CopilotDagNode } from "./CopilotDagNode";
-import { visiblePrepLines } from "./prepLogModel";
+import { splitRecallCheckpoint, visiblePrepLines } from "./prepLogModel";
 import { workspaceFileUrl } from "../../api/rest";
 import { InlineResultTable } from "../shared/InlineResultTable";
 import { InlineSqlBlock } from "../shared/InlineSqlBlock";
 import {
+  bindCopilotFlowNodes,
   buildCopilotFlowGraph,
   defaultSelectedNodeId,
   FLOW_STATUS_LABEL,
   flowCanvasHeight,
   flowViewportAction,
   formatNodeDuration,
-  inspectorStatusDetail,
+  inspectorLead,
+  latestLlmChip,
+  rememberFlowNodeMeasurements,
   resolveFlowNodeId,
   type CopilotFlowNode,
   type FlowNodeData,
@@ -56,6 +71,8 @@ interface CopilotFlowGraphProps {
   onSelect?: (id: string | null) => void;
   liveSpans?: SpanEventData[];
   trajectoryGroups?: TrajectoryGroup[];
+  promptInventory?: PromptInventorySnapshot | null;
+  subInventories?: Record<string, PromptInventorySnapshot>;
 }
 
 const NODE_TYPES = { copilot: CopilotDagNode };
@@ -104,14 +121,22 @@ function FlowCanvas({
   const setViewportRef = useRef(setViewport);
   fitViewRef.current = fitView;
   setViewportRef.current = setViewport;
+  const storeApi = useStoreApi();
+  const measuredRef = useRef(new Map<string, { width: number; height: number }>());
   const nodesInitialized = useNodesInitialized();
   const flowWidth = useStore((state) => state.width);
   const flowHeight = useStore((state) => state.height);
   const userPanned = useRef(false);
-  const selectedNodes = useMemo(
-    () => nodes.map((n) => ({ ...n, selected: n.id === selectedId })),
-    [nodes, selectedId],
-  );
+  const selectedNodes = useMemo(() => {
+    storeApi.getState().nodeLookup.forEach((internal, id) => {
+      const width = internal.measured?.width;
+      const height = internal.measured?.height;
+      if (width != null && height != null) measuredRef.current.set(id, { width, height });
+    });
+    const bound = bindCopilotFlowNodes(nodes, selectedId, measuredRef.current);
+    rememberFlowNodeMeasurements(bound, measuredRef.current);
+    return bound;
+  }, [nodes, selectedId, storeApi]);
   const graphKey = `${nodes.map((n) => n.id).join("|")}|${edges.map((edge) => edge.id).join("|")}`;
 
   useEffect(() => {
@@ -192,6 +217,7 @@ export function CopilotFlowGraph({
   onSelect,
   liveSpans = [],
   trajectoryGroups = [],
+  subInventories = {},
 }: CopilotFlowGraphProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const thinkingLive = turnRunning && (thinkingPhase === "start" || thinkingPhase === "delta");
@@ -221,21 +247,41 @@ export function CopilotFlowGraph({
       turnStartedAt,
     ],
   );
+  const forest = useMemo(
+    () => buildTrajectoryForest(trajectoryGroups, liveSpans, delegations),
+    [trajectoryGroups, liveSpans, delegations],
+  );
+  const planBranch = useMemo(() => mainAgentLiveBranch(liveSpans), [liveSpans]);
   const paintedNodes = useMemo(
     () =>
       nodes.map((node) => {
-        if (node.id !== "plan") return node;
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            thinking: thinking || undefined,
-            thinkingLive,
-            prepLog: prepLog.length > 0 ? prepLog : undefined,
-          },
-        };
+        let next = node;
+        if (node.id === "plan") {
+          const llmChip = planBranch ? latestLlmChip(planBranch.spans) : undefined;
+          const liveChip = llmChip?.className === "active" ? llmChip : undefined;
+          const chips = [...(liveChip ? [liveChip] : []), ...(node.data.chips ?? [])];
+          next = {
+            ...node,
+            data: {
+              ...node.data,
+              detail: liveChip ? liveChip.label : node.data.detail,
+              thinking: thinking || undefined,
+              thinkingLive,
+              prepLog: prepLog.length > 0 ? prepLog : undefined,
+              chips: chips.length > 0 ? chips : undefined,
+            },
+          };
+        }
+        if (next.data.kind === "agent") {
+          const irChip = inventoryChipForAgent(next.data.subId, subInventories);
+          if (irChip) {
+            const chips = [irChip, ...(next.data.chips ?? []).filter((chip) => chip.key !== "ir")];
+            next = { ...next, data: { ...next.data, chips } };
+          }
+        }
+        return next;
       }),
-    [nodes, thinking, thinkingLive, prepLog],
+    [nodes, thinking, thinkingLive, prepLog, planBranch, subInventories],
   );
 
   const autoId = defaultSelectedNodeId(paintedNodes, turnRunning);
@@ -249,14 +295,12 @@ export function CopilotFlowGraph({
   const elapsedLabel = selected
     ? formatNodeDuration(selected.data.startedAt, selected.data.endedAt, now)
     : undefined;
-  const forest = useMemo(
-    () => buildTrajectoryForest(trajectoryGroups, liveSpans, delegations),
-    [trajectoryGroups, liveSpans, delegations],
-  );
   const innerBranch =
-    selected?.data.kind === "agent" && selected.id.startsWith("agent-")
-      ? findTrajectoryBranch(forest, selected.id.slice("agent-".length))
-      : undefined;
+    selected?.id === "plan"
+      ? planBranch
+      : selected?.data.kind === "agent" && selected.id.startsWith("agent-")
+        ? findTrajectoryBranch(forest, selected.id.slice("agent-".length))
+        : undefined;
   const height = flowCanvasHeight(paintedNodes);
   const belongsHere = Boolean(resolveFlowNodeId(paintedNodes, selectedIdProp ?? null));
 
@@ -291,6 +335,8 @@ export function CopilotFlowGraph({
           elapsedLabel={elapsedLabel}
           sessionId={sessionId}
           innerBranch={innerBranch}
+          delegations={delegations}
+          subInventories={subInventories}
         />
       )}
     </div>
@@ -302,18 +348,53 @@ function FlowInspector({
   elapsedLabel,
   sessionId,
   innerBranch,
+  delegations,
+  subInventories,
 }: {
   node: CopilotFlowNode;
   elapsedLabel?: string;
   sessionId?: string | null;
   innerBranch?: TrajectoryBranch;
+  delegations: DelegationBlock[];
+  subInventories?: Record<string, PromptInventorySnapshot>;
 }) {
   const { data } = node;
   const imageSrc = workspaceFileUrl(sessionId, data.imagePath);
   const reportHref = workspaceFileUrl(sessionId, data.reportPath);
   const innerSpans = (innerBranch?.spans ?? []).filter((span) => span.kind !== "stage");
   const pipelineSteps = data.pipelineSteps ?? [];
-  const statusDetail = inspectorStatusDetail(data);
+  const lead = inspectorLead(data, delegations);
+  const thinkingBySpan = data.kind === "plan" ? thinkingByLlmSpan(innerSpans, data.thinking) : new Map();
+  const llmSpans = innerSpans.filter((span) => span.kind === "llm");
+  const showThinkingFallback = Boolean(data.thinking) && (data.kind !== "plan" || llmSpans.length === 0);
+  const assembly = inspectorSubAssembly(data, subInventories);
+  const showAssembly = assembly != null && shouldShowAssembly(assembly, "sub");
+  const isPlan = data.kind === "plan";
+  const decisionTools = data.decisionTools ?? [];
+  // Prefer structured tool rows; raw planHint only when there is nothing better.
+  const showDecisionText = Boolean(data.decision) && decisionTools.length === 0;
+  const showPrimaryTools = decisionTools.length > 0;
+  // Plan chips duplicate tool labels; agent/artifact chips stay in the deep fold.
+  const showChips = Boolean(data.chips?.length) && !isPlan;
+  const hasProcess = Boolean(
+    (data.prepLog && data.prepLog.length > 0)
+    || innerSpans.length > 0
+    || showThinkingFallback,
+  );
+  const hasDeep = Boolean(
+    hasProcess
+    || showAssembly
+    || showChips
+    || pipelineSteps.length > 0,
+  );
+  const hasDetails = showDecisionText || showPrimaryTools || hasDeep;
+  // Keep the inspector skim-first: never auto-expand a wall of text.
+  const [detailsFor, setDetailsFor] = useState(node.id);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  if (detailsFor !== node.id) {
+    setDetailsFor(node.id);
+    setDetailsOpen(false);
+  }
   return (
     <div className="copilot-flow-inspector">
       <div className="copilot-flow-head">
@@ -323,68 +404,8 @@ function FlowInspector({
           {elapsedLabel ? ` · ${elapsedLabel}` : ""}
         </span>
       </div>
-      {statusDetail ? <div className="copilot-flow-detail">{statusDetail}</div> : null}
+      {lead ? <div className="copilot-flow-detail">{lead}</div> : null}
       {data.error && <div className="delegation-card-error">{data.error}</div>}
-      {data.decision && <div className="copilot-flow-io">{data.decision}</div>}
-      {data.decisionTools && data.decisionTools.length > 0 && (
-        <ol className="copilot-flow-io-list" aria-label="委派参数">
-          {data.decisionTools.map((tool) => (
-            <li key={tool.label}>
-              <span className="copilot-flow-io-label">{tool.label}</span>
-              <pre className="copilot-flow-io-body">{tool.summary}</pre>
-            </li>
-          ))}
-        </ol>
-      )}
-      {data.prepLog && data.prepLog.length > 0 && (
-        <PrepLog items={data.prepLog} live={data.status === "active"} />
-      )}
-      {data.chips && data.chips.length > 0 && (
-        <div className="copilot-flow-sub" aria-label="节点详情标签">
-          {data.chips.map((chip) => (
-            <span key={chip.key} className={`copilot-flow-chip ${chip.className ?? ""}`.trim()}>
-              {chip.label}
-            </span>
-          ))}
-        </div>
-      )}
-      {pipelineSteps.length > 0 && (
-        <ol className="copilot-flow-inner-steps" aria-label="流水线产物">
-          {pipelineSteps.map((step, index) => (
-            <li key={`${step.label}-${index}`} className={step.live ? "active" : "done"}>
-              <span className="trajectory-kind">产物</span>
-              <span>{step.label}</span>
-              {step.live ? <span className="copilot-flow-inner-meta">进行中</span> : null}
-              {step.detail ? <pre className="copilot-flow-inner-detail">{step.detail}</pre> : null}
-            </li>
-          ))}
-        </ol>
-      )}
-      {innerSpans.length > 0 && (
-        <ol className="copilot-flow-inner-steps" aria-label="内部步骤">
-          {innerSpans.map((span) => {
-            const duration = formatSpanDuration(span.startTs, span.endTs);
-            const running = spanIsRunning(span);
-            const output = span.content || span.result;
-            return (
-              <li key={span.id} className={span.failed ? "is-failed" : running ? "active" : "done"}>
-                <span className="trajectory-kind">{spanKindLabel(span.kind)}</span>
-                <span>{span.label}</span>
-                {duration ? <span className="copilot-flow-inner-meta">{duration}</span> : null}
-                {running ? <span className="copilot-flow-inner-meta">进行中</span> : null}
-                {span.failed ? <span className="copilot-flow-inner-meta">失败</span> : null}
-                {output ? <pre className="copilot-flow-inner-detail">{output}</pre> : null}
-              </li>
-            );
-          })}
-        </ol>
-      )}
-      {data.thinking && (
-        <details className="copilot-flow-thinking-wrap" open={Boolean(data.thinkingLive)}>
-          <summary>模型思考</summary>
-          <ThinkingBody text={data.thinking} live={Boolean(data.thinkingLive)} />
-        </details>
-      )}
       {data.sql && data.artifactKind !== "excerpts" && <InlineSqlBlock sql={data.sql} />}
       {data.columns && data.columns.length > 0 && (
         <InlineResultTable
@@ -418,8 +439,126 @@ function FlowInspector({
           <div className="delegation-file-path">{data.reportPath}</div>
         )
       )}
+      {hasDetails ? (
+        <details
+          className="copilot-flow-details"
+          open={detailsOpen}
+          onToggle={(event) => setDetailsOpen(event.currentTarget.open)}
+        >
+          <summary>查看详情</summary>
+          {showPrimaryTools && (
+            <ol className="copilot-flow-io-list" aria-label="委派摘要">
+              {decisionTools.map((tool, index) => (
+                <li key={`${index}-${tool.label}`}>
+                  <span className="copilot-flow-io-label">{tool.label}</span>
+                  {tool.summary ? <span className="copilot-flow-io-summary">{tool.summary}</span> : null}
+                </li>
+              ))}
+            </ol>
+          )}
+          {showDecisionText && (
+            <div className="copilot-flow-io">
+              <span className="copilot-flow-io-kicker">委派决策</span>
+              <div className="copilot-flow-io-summary">{data.decision}</div>
+            </div>
+          )}
+          {hasDeep ? (
+            <details className="copilot-flow-nested">
+              <summary>过程与装入</summary>
+              {data.prepLog && data.prepLog.length > 0 && (
+                <PrepLog items={data.prepLog} live={data.status === "active"} />
+              )}
+              {showChips && data.chips && data.chips.length > 0 && (
+                <div className="copilot-flow-sub" aria-label="节点详情标签">
+                  {data.chips.map((chip) => (
+                    <span key={chip.key} className={`copilot-flow-chip ${chip.className ?? ""}`.trim()}>
+                      {chip.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {pipelineSteps.length > 0 && (
+                <ol className="copilot-flow-inner-steps" aria-label="流水线产物">
+                  {pipelineSteps.map((step, index) => (
+                    <li key={`${step.label}-${index}`} className={step.live ? "active" : "done"}>
+                      <span className="trajectory-kind">产物</span>
+                      <span>{step.label}</span>
+                      {step.live ? <span className="copilot-flow-inner-meta">进行中</span> : null}
+                      {step.detail ? (
+                        <details className="copilot-flow-nested-inline">
+                          <summary>展开</summary>
+                          <pre className="copilot-flow-inner-detail">{step.detail}</pre>
+                        </details>
+                      ) : null}
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {innerSpans.length > 0 && (
+                <ol className="copilot-flow-inner-steps" aria-label="内部步骤">
+                  {innerSpans.map((span) => {
+                    const duration = formatSpanDuration(span.startTs, span.endTs);
+                    const running = spanIsRunning(span);
+                    const role = isPlan && span.kind === "llm" ? mainLlmRole(span, delegations) : undefined;
+                    const label = role ? mainLlmRoleLabel(role) : span.label;
+                    const thinking = thinkingBySpan.get(span.id);
+                    const output = span.kind === "llm" ? undefined : span.result;
+                    const emptyRewrite = span.kind === "llm" && role === "rewrite" && !thinking && !running;
+                    const hasBody = Boolean(thinking || output);
+                    return (
+                      <li key={span.id} className={span.failed ? "is-failed" : running ? "active" : "done"}>
+                        <span className="trajectory-kind">{spanKindLabel(span.kind)}</span>
+                        <span>{label}</span>
+                        {span.kind === "llm" && span.label !== label ? (
+                          <span className="copilot-flow-inner-meta">{span.label}</span>
+                        ) : null}
+                        {duration ? <span className="copilot-flow-inner-meta">{duration}</span> : null}
+                        {running ? <span className="copilot-flow-inner-meta">进行中</span> : null}
+                        {span.failed ? <span className="copilot-flow-inner-meta">失败</span> : null}
+                        {emptyRewrite ? <span className="copilot-flow-inner-meta">无流式思考</span> : null}
+                        {hasBody ? (
+                          <details className="copilot-flow-nested-inline">
+                            <summary>{thinking ? "思考" : "输出"}</summary>
+                            {thinking ? <pre className="copilot-flow-inner-detail">{thinking}</pre> : null}
+                            {output ? <pre className="copilot-flow-inner-detail">{output}</pre> : null}
+                          </details>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+              {showThinkingFallback && (
+                <details className="copilot-flow-thinking-wrap">
+                  <summary>模型思考</summary>
+                  <ThinkingBody text={data.thinking ?? ""} live={Boolean(data.thinkingLive)} />
+                </details>
+              )}
+              {showAssembly && assembly ? (
+                <AssemblyPanel
+                  inventory={assembly}
+                  scope="sub"
+                  heading="本轮装入提示词"
+                  note="不含提示词正文。"
+                  compact
+                />
+              ) : null}
+            </details>
+          ) : null}
+        </details>
+      ) : null}
     </div>
   );
+}
+
+function inspectorSubAssembly(
+  data: FlowNodeData,
+  subInventories: Record<string, PromptInventorySnapshot> | undefined,
+) {
+  if (data.kind !== "agent") return null;
+  const packed = subInventoryOf(subInventories, data.subId);
+  if (!packed) return null;
+  return buildPromptInventory({ packed, delegations: [], prepLog: [] });
 }
 
 function PrepLog({ items, live }: { items: string[]; live: boolean }) {
@@ -430,12 +569,25 @@ function PrepLog({ items, live }: { items: string[]; live: boolean }) {
       <ol className="copilot-flow-prep" aria-label={live ? "规划准备步骤" : "规划短结果"}>
         {shown.map((line) => {
           const isLiveHeartbeat = live && line.kind === "heartbeat";
+          const recall = splitRecallCheckpoint(line.text);
           return (
             <li
               key={`${line.index}-${line.text}`}
               className={`${line.kind}${isLiveHeartbeat ? " active" : ""}`}
             >
-              {line.text}
+              {recall ? (
+                <>
+                  <div>{recall.headline}</div>
+                  {recall.preview ? (
+                    <details className="copilot-flow-prep-preview">
+                      <summary>召回预览</summary>
+                      <pre>{recall.preview}</pre>
+                    </details>
+                  ) : null}
+                </>
+              ) : (
+                line.text
+              )}
             </li>
           );
         })}

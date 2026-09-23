@@ -129,14 +129,18 @@ class SelectorNode(BaseNL2SQLNode):
                 session_id=str(state.get("session_id") or "") or None,
                 user_id=str(state.get("user_id") or "") or None,
             )
-        payload = persist_nl2sql_result(
-            sql=str(state.get("sql") or ""),
-            columns=state.get("columns") if isinstance(state.get("columns"), list) else None,
-            rows=rows_for_persist(state.get("rows"), state.get("rows_preview")),
-            workspace=workspace,
-            run_id=state.get("run_id", state.get("_parent_run_id", 0)),
-            sub_id=state.get("sub_id"),
-        )
+        try:
+            payload = persist_nl2sql_result(
+                sql=str(state.get("sql") or ""),
+                columns=state.get("columns") if isinstance(state.get("columns"), list) else None,
+                rows=rows_for_persist(state.get("rows"), state.get("rows_preview")),
+                workspace=workspace,
+                run_id=state.get("run_id", state.get("_parent_run_id", 0)),
+                sub_id=state.get("sub_id"),
+            )
+        except ValueError as exc:
+            logger.warning("nl2sql persist skipped: {}", exc)
+            return ""
         if not payload:
             return ""
         state.update(payload)

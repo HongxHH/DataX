@@ -110,6 +110,28 @@ def set_current_stream_queue(q: Any) -> None:
     _current_stream_queue.set(q)
 
 
+def bind_current_stream_queue(q: Any, runtime: Any = None) -> None:
+    """Install the pre-graph live queue on ContextVar and, when possible, on runtime."""
+    set_current_stream_queue(q)
+    if runtime is None:
+        return
+    try:
+        setattr(runtime, _STREAM_QUEUE_ATTR, q)
+    except Exception:
+        pass
+
+
+def unbind_current_stream_queue(runtime: Any = None) -> None:
+    """Clear the pre-graph live queue from ContextVar and runtime."""
+    clear_current_stream_queue()
+    if runtime is None:
+        return
+    try:
+        setattr(runtime, _STREAM_QUEUE_ATTR, None)
+    except Exception:
+        pass
+
+
 def get_current_stream_queue() -> Any:
     """获取当前 Context 中的流式输出队列。"""
     return _current_stream_queue.get()
@@ -293,10 +315,27 @@ def get_global_state_snapshot(runtime: Any | None = None) -> dict[str, Any]:
         return {}
 
 
+def _write_to_stream_queue(data: dict[str, Any]) -> bool:
+    """Write a compact custom event onto the pre-graph / cross-thread queue."""
+    try:
+        stream_queue = get_current_stream_queue()
+        if not isinstance(stream_queue, _queue.Queue):
+            runtime = get_current_runtime()
+            stream_queue = getattr(runtime, _STREAM_QUEUE_ATTR, None) if runtime is not None else None
+        if isinstance(stream_queue, _queue.Queue):
+            stream_queue.put(data)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def get_stream_writer() -> Callable[[dict[str, Any]], None]:
     """
     在 langgraph backend 下：复用 langgraph.config.get_stream_writer
     在 openjiuwen backend 下：使用 runtime.write_stream
+    图启动前（agent pre-hook）无 LangGraph writer：写入 ``set_current_stream_queue``，
+    由 FlexAgent 排空并 yield 同一条 compact custom 事件。
     """
     runtime = get_current_backend_runtime()
     if not _is_openjiuwen_runtime(runtime):
@@ -304,14 +343,19 @@ def get_stream_writer() -> Callable[[dict[str, Any]], None]:
         from langgraph.config import get_stream_writer as _lg_get_stream_writer  # type: ignore[import-not-found]
 
         try:
-            return _lg_get_stream_writer()
-        # 防止在langgraph外运行单个原子功能时报错，返回空函数
+            lg_writer = _lg_get_stream_writer()
         except RuntimeError:
+            lg_writer = None
 
-            def null_writer(data: dict[str, Any]) -> None:
-                _ = data
+        def _langgraph_or_queue_writer(data: dict[str, Any]) -> None:
+            # Pre-graph: FlexAgent installed a queue and is the consumer.
+            # Prefer it over a leaked LangGraph no-op writer from a prior runnable context.
+            if _write_to_stream_queue(data):
+                return
+            if lg_writer is not None:
+                lg_writer(data)
 
-            return null_writer
+        return _langgraph_or_queue_writer
 
     # openjiuwen：WrappedNodeRuntime 可能没有 write_stream（或无法 setattr），但 base runtime 通常有
     write_stream = getattr(runtime, "write_stream", None)
@@ -326,12 +370,7 @@ def get_stream_writer() -> Callable[[dict[str, Any]], None]:
 
     def _writer(data: dict[str, Any]) -> None:
         # 1) dataagent 旁路：如果 invoke 显式注入了 stream_queue，优先写入（保证前端能收到）
-        try:
-            stream_queue = get_current_stream_queue()
-            if isinstance(stream_queue, _queue.Queue):
-                stream_queue.put(data)
-        except Exception:
-            pass
+        _write_to_stream_queue(data)
 
         # 2) 尝试写入 openjiuwen 自带 stream（若存在）
         if write_stream is None:

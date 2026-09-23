@@ -116,6 +116,8 @@ export function CopilotMessageList({
                 {...flowFocusForTurn(selectedNodeId, messageTurnKey(idx), onSelectNode)}
                 liveSpans={msg.otel_spans}
                 trajectoryGroups={trajectoryGroups}
+                promptInventory={msg.prompt_inventory}
+                subInventories={msg.sub_prompt_inventories}
               />
             )}
 
@@ -153,6 +155,8 @@ export function CopilotMessageList({
             {...flowFocusForTurn(selectedNodeId, LIVE_TURN_KEY, onSelectNode)}
             liveSpans={activeTurn?.otel_spans}
             trajectoryGroups={trajectoryGroups}
+            promptInventory={activeTurn?.prompt_inventory}
+            subInventories={activeTurn?.sub_prompt_inventories}
           />
 
           {streamingContent && (

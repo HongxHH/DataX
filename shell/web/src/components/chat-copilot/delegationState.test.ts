@@ -1,12 +1,17 @@
 import {
   appendDelegationThinking,
+  applyDelegationToolEvent,
+  agentLabelFromConfigPath,
   clipThinkingTail,
   collectVisibleDelegations,
+  displayAgentLabel,
+  displayPlanText,
   failOpenDelegations,
   finalizeDelegations,
   interruptedDelegationReason,
   mergeDelegationThinking,
   THINKING_CLIP_MAX,
+  workerReuseLabel,
 } from "./delegationState";
 import type { DelegationBlock } from "../../types";
 
@@ -15,6 +20,22 @@ function assert(condition: unknown, message: string): void {
     throw new Error(message);
   }
 }
+
+assert(displayAgentLabel("Landcheck NL2SQL") === "NL2SQL", "strips Landcheck prefix");
+assert(displayAgentLabel("NL2SQL") === "NL2SQL", "keeps generic label");
+assert(displayPlanText("将委派 Landcheck NL2SQL 处理：问句") === "将委派 NL2SQL 处理：问句", "plan text drops brand");
+assert(agentLabelFromConfigPath("configs/landcheck_nl2sql.yaml") === "NL2SQL", "config maps to NL2SQL");
+
+const labeled = applyDelegationToolEvent(
+  { tool_call_id: "call-label", tool_name: "sub_agent_tool", status: "running" },
+  {
+    tool_call_id: "call-label",
+    tool_name: "sub_agent_tool",
+    agent_label: "Landcheck NL2SQL",
+    config_path: "configs/landcheck_nl2sql.yaml",
+  },
+);
+assert(labeled.label === "NL2SQL", "tool event stores display label without Landcheck");
 
 const running: DelegationBlock = {
   tool_call_id: "call-1",
@@ -86,5 +107,10 @@ assert(collected.length === 2, "assistant plus live delegations");
 assert(collected.some((block) => block.tool_call_id === "old-call"), "keeps earlier turn");
 assert(collected.some((block) => block.tool_call_id === "live-call"), "keeps live turn");
 assert(!collected.some((block) => block.tool_call_id === "skip"), "user-role delegations stay out");
+
+assert(workerReuseLabel({ sub_id: 3, resumed: false }) === "#3 新建", "new worker chip");
+assert(workerReuseLabel({ sub_id: 3, resumed: true }) === "#3 复用", "kernel resumed chip");
+assert(workerReuseLabel({ sub_id: 3 }) === "#3", "unknown resumed shows id only");
+assert(workerReuseLabel({}) === null, "no chip without sub_id");
 
 console.log("delegationState.test.ts ok");

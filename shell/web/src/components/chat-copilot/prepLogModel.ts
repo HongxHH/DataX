@@ -10,11 +10,23 @@ export interface PrepLine {
 export const PLAN_PREP_LOG_LIMIT = 20;
 
 const CHECKPOINT_PREFIXES = ["问句已改写为 ", "跨会话记忆："];
+const RECALL_PREFIX = "跨会话记忆：";
+const RECALL_PREVIEW_SEP = " · ";
 
 export function prepKind(text: string): PrepKind {
   const trimmed = text.trim();
   if (CHECKPOINT_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) return "checkpoint";
   return "heartbeat";
+}
+
+export function splitRecallCheckpoint(text: string): { headline: string; preview?: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith(RECALL_PREFIX)) return null;
+  const sep = trimmed.indexOf(RECALL_PREVIEW_SEP);
+  if (sep < 0) return { headline: trimmed };
+  const headline = trimmed.slice(0, sep).trim();
+  const preview = trimmed.slice(sep + RECALL_PREVIEW_SEP.length).trim();
+  return preview ? { headline, preview } : { headline };
 }
 
 export function classifyPrepLog(items: string[]): PrepLine[] {

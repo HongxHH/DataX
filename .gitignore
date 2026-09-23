@@ -251,10 +251,38 @@ shell/web/node_modules/
 shell/web/dist/
 shell/web/tsconfig.tsbuildinfo
 
-# Local-only trees (not part of the published Copilot slice)
-.cursor/
-.agents/
-openspec/
-Semantic Service/
-.pytest_cache/
+# Windows junk
+Thumbs.db
+Desktop.ini
+
+# Local sqlite created by the shell / datapilot
+datapilot.db
+*.db
+
+# =============================================================================
+# Public slice only:
+#   dataagent/  shell/  schema/
+#   docs/images/README.md + workbench|delegation|context|trajectory.png
+#   LICENSE  NOTICE  README.md  pyproject.toml  .env.example  .gitignore
+# Everything else in this working copy stays local.
+# =============================================================================
+/tests/
+/scripts/
+/openspec/
+/.cursor/
+/.agents/
+/Semantic Service/
+/evaluation/
+restart-shell-backend.bat
 LICENSE.tmp
+*.bak
+
+# Upstream mkdocs, study notes, contracts — keep screenshot files only
+/docs/*
+!/docs/images/
+/docs/images/*
+!/docs/images/README.md
+!/docs/images/workbench.png
+!/docs/images/delegation.png
+!/docs/images/context.png
+!/docs/images/trajectory.png

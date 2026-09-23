@@ -13,8 +13,11 @@
 import asyncio
 import json
 import os
+import queue as _queue
+import time
 import traceback
 from collections.abc import AsyncGenerator, AsyncIterator, Generator, Mapping
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +62,10 @@ _AGENT_PRE_HOOK_HINTS: tuple[tuple[str, str], ...] = (
     ("intent_understanding", "正在理解意图…"),
     ("pruner", "正在压缩过长对话…"),
 )
+_AGENT_PRE_HOOK_LLM_LABELS: tuple[tuple[str, str], ...] = (
+    ("context_reference_rewriter", "指代解析"),
+    ("intent_understanding", "意图理解"),
+)
 
 
 def _hint_for_agent_pre_hook(hook: Any) -> str:
@@ -69,9 +76,52 @@ def _hint_for_agent_pre_hook(hook: Any) -> str:
     return f"正在执行预处理：{name}"
 
 
+def _llm_span_event_for_pre_hook(
+    hook: Any,
+    phase: str,
+    *,
+    started_at: float | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Pre-graph LLM wait is invisible unless FlexAgent yields the span itself.
+
+    Recorder live-emit still depends on get_current_runtime(); the rewriter can
+    block for minutes without that. This placeholder uses the same compact
+    ``otel_span`` contract (name/phase/duration, no prompt).
+    """
+    name = callable_perf_name(hook)
+    label = next((lab for key, lab in _AGENT_PRE_HOOK_LLM_LABELS if key in name), None)
+    if label is None:
+        return None
+    now = time.time()
+    payload: dict[str, Any] = {
+        "type": "otel_span",
+        "kind": "llm",
+        "phase": phase,
+        "name": label,
+        "timestamp": now,
+    }
+    if phase == "end" and started_at is not None:
+        payload["duration_ms"] = max(0, int((now - started_at) * 1000))
+    return ("custom", payload)
+
+
 async def _flush_stream() -> None:
     """让出事件循环，使已 yield 的 custom/SSE 事件先写出。"""
     await asyncio.sleep(0)
+
+
+def _drain_live_stream_queue(live_q: Any) -> list[tuple[str, dict[str, Any]]]:
+    """Take compact custom events already written by pre-graph ``get_stream_writer``."""
+    events: list[tuple[str, dict[str, Any]]] = []
+    if not isinstance(live_q, _queue.Queue):
+        return events
+    while True:
+        try:
+            item = live_q.get_nowait()
+        except _queue.Empty:
+            return events
+        if isinstance(item, dict) and item.get("type"):
+            events.append(("custom", item))
 
 
 def _sync_enable_human_feedback(state: dict[str, Any], config: Mapping[str, Any] | None) -> None:
@@ -929,16 +979,22 @@ class FlexAgent(BaseAgent):
         self, hook: Any, state: dict[str, Any], runtime: Any, *, yaml_hook: bool
     ) -> dict[str, Any]:
         from dataagent.core.cbb.base_hook import invoke_hook
+        from dataagent.core.framework_adapters.runtime.context import reset_current_runtime, set_current_runtime
 
-        collector = get_current_collector()
-        with collector.measure(
-            "hook",
-            callable_perf_name(hook),
-            hook_scope="agent",
-            hook_phase="pre",
-        ):
-            out = hook(state, runtime) if yaml_hook else invoke_hook(hook, state, runtime)
-        return out if isinstance(out, dict) else state
+        token = set_current_runtime(runtime) if runtime is not None else None
+        try:
+            collector = get_current_collector()
+            with collector.measure(
+                "hook",
+                callable_perf_name(hook),
+                hook_scope="agent",
+                hook_phase="pre",
+            ):
+                out = hook(state, runtime) if yaml_hook else invoke_hook(hook, state, runtime)
+            return out if isinstance(out, dict) else state
+        finally:
+            if token is not None:
+                reset_current_runtime(token)
 
     def _apply_agent_pre_hooks_with_progress(
         self, state: dict[str, Any], runtime: Any
@@ -963,25 +1019,62 @@ class FlexAgent(BaseAgent):
         runtime: Any,
         done: list[dict[str, Any]],
     ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
-        """写出 pre-hook 进度事件；同步 hook（含 llm.invoke）放到线程，避免占死事件循环。"""
+        """写出 pre-hook 进度事件；同步 hook（含 llm.invoke）放到线程，避免占死事件循环。
+
+        图启动前无 LangGraph writer。给线程拷一份 stream queue，把 recorder 的 compact
+        ``otel_span`` 排空成与图内相同的 custom 事件。
+        """
+        from dataagent.core.framework_adapters.runtime.context import (
+            bind_current_stream_queue,
+            unbind_current_stream_queue,
+        )
+
         current = state if isinstance(state, dict) else {}
         hook_runs: list[tuple[Any, bool]] = []
         for hook in getattr(self, "_builtin_agent_pre_hooks", None) or []:
             hook_runs.append((hook, False))
         for hook in getattr(self, "_pre_hooks", None) or []:
             hook_runs.append((hook, True))
-        for hook, yaml_hook in hook_runs:
-            yield _progress_hint_event(_hint_for_agent_pre_hook(hook))
-            await _flush_stream()
-            current = await asyncio.to_thread(
-                self._invoke_agent_pre_hook,
-                hook,
-                current,
-                runtime,
-                yaml_hook=yaml_hook,
-            )
-            if not isinstance(current, dict):
-                current = state if isinstance(state, dict) else {}
+        live_q: _queue.Queue = _queue.Queue()
+        bind_current_stream_queue(live_q, runtime)
+        try:
+            for hook, yaml_hook in hook_runs:
+                yield _progress_hint_event(_hint_for_agent_pre_hook(hook))
+                await _flush_stream()
+                started_at = time.time()
+                llm_start = _llm_span_event_for_pre_hook(hook, "start")
+                if llm_start is not None:
+                    yield llm_start
+                    await _flush_stream()
+                worker = asyncio.create_task(
+                    asyncio.to_thread(
+                        self._invoke_agent_pre_hook,
+                        hook,
+                        current,
+                        runtime,
+                        yaml_hook=yaml_hook,
+                    )
+                )
+                try:
+                    while not worker.done():
+                        for event in _drain_live_stream_queue(live_q):
+                            yield event
+                        await asyncio.sleep(0.05)
+                    for event in _drain_live_stream_queue(live_q):
+                        yield event
+                    current = await worker
+                finally:
+                    if not worker.done():
+                        worker.cancel()
+                        with suppress(asyncio.CancelledError, Exception):
+                            await worker
+                llm_end = _llm_span_event_for_pre_hook(hook, "end", started_at=started_at)
+                if llm_end is not None:
+                    yield llm_end
+                if not isinstance(current, dict):
+                    current = state if isinstance(state, dict) else {}
+        finally:
+            unbind_current_stream_queue(runtime)
         done.append(current)
 
     def _run_agent_pre_hooks(self, state: dict[str, Any], runtime: Any) -> dict[str, Any]:

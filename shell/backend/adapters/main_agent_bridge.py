@@ -354,7 +354,10 @@ class MainAgentStreamMapper:
         if reasoning:
             events.extend(self._emit_think_delta(reasoning, node))
         tool_calls = data.get("tool_calls") or []
-        events.extend(self._maybe_plan(tool_calls, node))
+        plan_events = self._maybe_plan(tool_calls, node)
+        events.extend(plan_events)
+        if plan_events:
+            events.extend(self._end_thinking(node))
         content = str(data.get("content") or "")
         if content and _should_stream_output_msg(content):
             events.extend(self._end_thinking(node))

@@ -186,12 +186,19 @@ def test_append_assistant_persists_prompt_inventory_on_message_not_list(tmp_path
     assert "prompt_inventory" not in list_sessions()[0]
     append_assistant_message(
         session["id"],
-        "子代理清单不应写入主消息",
+        "子代理清单不应写入主字段",
         prompt_inventory={"ir_summary_count": 0, "workers": [], "sub_id": 8},
+        sub_prompt_inventories={
+            "8": {"ir_summary_count": 2, "workers": [], "sub_id": 8, "content": "secret prompt"},
+            "main": {"ir_summary_count": 1, "workers": []},
+        },
     )
     loaded_after_sub = get_session(session["id"])
     assert loaded_after_sub is not None
-    assert "prompt_inventory" not in loaded_after_sub["messages"][-1]
+    last = loaded_after_sub["messages"][-1]
+    assert "prompt_inventory" not in last
+    assert last["sub_prompt_inventories"] == {"8": {"ir_summary_count": 2, "workers": [], "sub_id": 8}}
+    assert "secret" not in str(last["sub_prompt_inventories"])
 
 
 def test_append_assistant_keeps_thinking_tail_and_prep_checkpoints(tmp_path, monkeypatch):

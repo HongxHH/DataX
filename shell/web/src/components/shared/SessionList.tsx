@@ -1,5 +1,4 @@
 import type { SessionSummary } from "../../types";
-import { ContextUsageMeter } from "../chat-copilot/ContextUsageMeter";
 import { CopyTextButton } from "./CopyTextButton";
 import { ChevronIcon, IconButton, PlusIcon } from "./IconButton";
 import { usePersistedToggle } from "./usePersistedToggle";
@@ -13,7 +12,6 @@ interface SessionListProps {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete?: (id: string) => void;
-  showUsage?: boolean;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
 }
@@ -35,7 +33,6 @@ export function SessionList({
   onSelect,
   onNew,
   onDelete,
-  showUsage = false,
   collapsed: collapsedProp,
   onToggleCollapsed,
 }: SessionListProps) {
@@ -106,8 +103,6 @@ export function SessionList({
                 </button>
               )}
             </div>
-            {s.preview ? <div className="session-preview">{s.preview}</div> : null}
-            {showUsage ? <ContextUsageMeter usage={s.context_usage} variant="mini" /> : null}
           </li>
         ))}
       </ul>

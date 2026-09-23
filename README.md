@@ -10,8 +10,6 @@
 
 ## 界面
 
-四张图放到 [`docs/images/`](docs/images/README.md)。截法见该目录说明。
-
 **工作台** · `docs/images/workbench.png`
 
 ![工作台](docs/images/workbench.png)
@@ -109,7 +107,7 @@ npm install
 npm run dev
 ```
 
-浏览器打开 **http://127.0.0.1:5173**，默认加载仓库内的示例库。密钥只放 `.env`。Python 导入名仍是 `dataagent`。
+浏览器打开 **http://127.0.0.1:5173**，默认加载仓库内的示例库。
 
 ## 换成自己的数据
 

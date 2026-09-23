@@ -103,9 +103,8 @@ def enrich_worker_tool_event(data: dict[str, Any], tool_args: dict[str, Any] | N
     if not args and isinstance(data.get("tool_args"), dict):
         args = data["tool_args"]
     sub_id = parse_worker_sub_id(data.get("sub_id")) or parse_worker_sub_id(args.get("sub_id"))
+    # Do not invent resumed from args.sub_id; only pass through kernel truth.
     resumed = data.get("resumed")
-    if resumed is None and parse_worker_sub_id(args.get("sub_id")) is not None:
-        resumed = True
     busy = bool(data.get("worker_busy")) or is_worker_busy_text(data.get("summary"), data.get("error"))
     extra: dict[str, Any] = {}
     if sub_id is not None:

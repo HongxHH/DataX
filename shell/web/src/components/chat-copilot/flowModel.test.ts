@@ -1,4 +1,4 @@
-import { buildCopilotFlowGraph, defaultSelectedNodeId, decodeFlowFocus, encodeFlowFocus, flowViewportAction, flowViewportReady, inspectorStatusDetail, LIVE_TURN_KEY, nodeIdInTurn, resolveFlowNodeId, ROW_GAP } from "./flowModel";
+import { bindCopilotFlowNodes, buildCopilotFlowGraph, clipInspectorSummary, defaultSelectedNodeId, decodeFlowFocus, encodeFlowFocus, flowViewportAction, flowViewportReady, inspectorLead, inspectorStatusDetail, latestLlmChip, LIVE_TURN_KEY, nodeIdInTurn, rememberFlowNodeMeasurements, resolveFlowNodeId, ROW_GAP } from "./flowModel";
 import type { DelegationBlock } from "../../types";
 
 function tableBlock(id: string, label: string): DelegationBlock {
@@ -101,6 +101,10 @@ const mixed = buildCopilotFlowGraph({
 });
 const mixedIds = mixed.nodes.map((node) => node.id);
 assert(!mixedIds.includes("answer"), "answer must wait until every agent finishes");
+assert(
+  mixed.nodes.find((node) => node.id === "plan")?.data.detail === "已委派 NL2SQL、Plot",
+  "plan card names delegated agents while they run",
+);
 
 const prematureAnswer = buildCopilotFlowGraph({
   delegations: [
@@ -153,6 +157,10 @@ assert(
   afterPlot.nodes.find((node) => node.id === "answer")?.data.detail === "正在生成结论",
   "answer is synthesizing after agents finish",
 );
+assert(
+  afterPlot.nodes.find((node) => node.id === "plan")?.data.detail === "正在根据子 Agent 结果总结",
+  "plan card switches to summarize after agents settle",
+);
 
 const reused = buildCopilotFlowGraph({
   delegations: [
@@ -169,6 +177,32 @@ assert(
 assert(
   reused.nodes.find((node) => node.id === "agent-b")?.data.chips?.some((chip) => chip.label.includes("复用")),
   "reuse chip visible",
+);
+assert(reused.nodes.find((node) => node.id === "agent-a")?.data.subId === 2, "agent card keeps sub_id");
+assert(
+  reused.nodes.find((node) => node.id === "agent-a")?.data.chips?.some((chip) => chip.label.includes("新建")) === true,
+  "first worker call stays new",
+);
+
+const reusedWithoutFlag = buildCopilotFlowGraph({
+  delegations: [
+    { ...tableBlock("a", "Landcheck NL2SQL"), sub_id: 844533, resumed: false },
+    { ...tableBlock("b", "Landcheck Plot"), sub_id: 844533, resumed: false },
+  ],
+  hasAnswer: true,
+  turnRunning: false,
+});
+assert(
+  reusedWithoutFlag.edges.some((edge) => edge.source === "agent-a" && edge.target === "agent-b" && edge.label === "复用"),
+  "same sub_id still draws reuse edge without resumed flag",
+);
+assert(
+  reusedWithoutFlag.nodes.find((node) => node.id === "agent-b")?.data.chips?.some((chip) => chip.label === "#844533 新建") === true,
+  "chip follows kernel resumed, not same-id inference",
+);
+assert(
+  reusedWithoutFlag.nodes.find((node) => node.id === "agent-a")?.data.chips?.some((chip) => chip.label === "#844533 新建") === true,
+  "first call chip stays new when kernel resumed is false",
 );
 
 const plannedTwo = buildCopilotFlowGraph({
@@ -189,6 +223,14 @@ assert(
   "not-yet-started planned agent stays visible",
 );
 assert(!plannedIds.includes("answer"), "answer waits while planned agents remain");
+assert(
+  plannedTwo.nodes.find((node) => node.id === "plan")?.data.detail === "已委派 NL2SQL、Plot",
+  "plan card stays on delegated names while a planned agent is pending",
+);
+assert(
+  plannedTwo.nodes.find((node) => node.id === "plan")?.data.decision === "先查数再画图",
+  "full plan hint remains in inspector decision",
+);
 assert(
   plannedTwo.nodes.find((node) => node.id === "plan")?.data.chips?.some((chip) => chip.label.includes("Plot"))
   === true,
@@ -212,6 +254,13 @@ assert(
   llmNode?.data.chips?.some((chip) => chip.label.includes("qwen-plus") && chip.label.includes("tok")) === true,
   "agent chip shows llm duration and tokens",
 );
+
+assert(clipInspectorSummary("  当前一共有多少个项目？\n统计有效总数  ") === "当前一共有多少个项目？ 统计有效总数", "summary collapses whitespace");
+assert(
+  clipInspectorSummary("x".repeat(100)).endsWith("…") && clipInspectorSummary("x".repeat(100)).length === 72,
+  "summary clips to one line",
+);
+assert(clipInspectorSummary("") === "", "empty summary stays empty");
 
 assert(encodeFlowFocus("m0", "answer") === "m0::answer", "encode turn and node");
 assert(decodeFlowFocus("m0::answer")?.turnKey === "m0" && decodeFlowFocus("m0::answer")?.nodeId === "answer", "decode");
@@ -244,19 +293,78 @@ const decided = buildCopilotFlowGraph({
 });
 const decidedPlan = decided.nodes.find((node) => node.id === "plan");
 assert(decidedPlan?.data.decision?.includes("按年统计项目数") === true, "plan inspector keeps the decision");
+assert(decidedPlan?.data.decision?.includes("Landcheck") !== true, "plan decision drops scenario brand");
+assert(
+  decidedPlan?.data.decisionTools?.[0]?.label === "NL2SQL",
+  "plan decisionTools use generic agent label",
+);
 assert(
   decidedPlan?.data.decisionTools?.[0]?.summary === "按年份分组统计项目数量",
   "plan inspector keeps tool args",
 );
-assert(decidedPlan?.data.detail?.includes("按年统计项目数") === true, "plan node detail uses planHint");
 assert(
-  inspectorStatusDetail(decidedPlan?.data ?? { detail: "", decision: "" }) === undefined,
-  "inspector does not repeat the plan hint under the title",
+  buildCopilotFlowGraph({
+    planTools: [{
+      name: "sub_agent_tool",
+      label: "NL2SQL",
+      args_summary: `${"问".repeat(80)}详细统计口径与过滤条件`,
+    }],
+    turnRunning: false,
+  }).nodes.find((node) => node.id === "plan")?.data.decisionTools?.[0]?.summary?.endsWith("…") === true,
+  "plan tool summary stays one clipped line",
+);
+assert(decidedPlan?.data.detail === "已完成规划", "plan card uses a phase line after the turn");
+assert(
+  inspectorStatusDetail(decidedPlan?.data ?? { detail: "", decision: "" }) === "已完成规划",
+  "inspector keeps the phase line under the title",
 );
 assert(
-  inspectorStatusDetail({ detail: "正在思考如何拆解问题", decision: "将委派 Landcheck Plot" })
+  inspectorStatusDetail({ detail: "正在思考如何拆解问题", decision: "将委派 Plot" })
   === "正在思考如何拆解问题",
   "inspector keeps a distinct status line while thinking",
+);
+assert(
+  inspectorLead(
+    {
+      kind: "plan",
+      status: "done",
+      detail: "已完成规划",
+      decisionTools: [{ label: "Landcheck NL2SQL" }, { label: "Landcheck NL2SQL" }],
+    },
+    [
+      { label: "Landcheck NL2SQL", started_at: 10 },
+      { label: "Landcheck NL2SQL", started_at: 10 },
+    ],
+  ) === "并行委派了两个 NL2SQL",
+  "finished plan lead counts parallel same-name workers",
+);
+assert(
+  inspectorLead(
+    {
+      kind: "plan",
+      status: "done",
+      detail: "已完成规划",
+      decisionTools: [{ label: "Landcheck NL2SQL" }, { label: "Landcheck Plot" }],
+    },
+    [
+      { label: "Landcheck NL2SQL", started_at: 10 },
+      { label: "Landcheck Plot", started_at: 20 },
+    ],
+  ) === "委派了 NL2SQL、Plot",
+  "sequential mixed workers stay a name list",
+);
+assert(
+  inspectorLead({
+    kind: "plan",
+    status: "active",
+    detail: "正在思考如何拆解问题",
+    decisionTools: [{ label: "Landcheck NL2SQL" }, { label: "Landcheck NL2SQL" }],
+  }) === "正在思考如何拆解问题",
+  "live planning keeps the phase line",
+);
+assert(
+  inspectorLead({ kind: "agent", status: "done", detail: "已完成" }) === "已完成",
+  "agent lead stays the node status",
 );
 const decidedAgent = decided.nodes.find((node) => node.id === "agent-sql1");
 assert(
@@ -296,6 +404,34 @@ assert(
 assert(
   flowViewportAction({ nodesInitialized: true, nodeCount: 3, flowWidth: 1084, flowHeight: 626, canvasHeight: 628 }) === "fit",
   "fit when pane matches canvas",
+);
+
+const rebuilt = twoNl2sql.nodes.map((node) => ({ ...node, data: { ...node.data } }));
+const firstBind = bindCopilotFlowNodes(rebuilt, "plan", new Map([["plan", { width: 200, height: 104 }]]));
+assert(firstBind[0].selected === true, "selected id is marked");
+assert(firstBind[0].measured?.width === 200 && firstBind[0].measured?.height === 104, "keep last measured box");
+assert(firstBind[1].measured == null, "new nodes stay unmeasured until React Flow sizes them");
+const sizes = new Map<string, { width: number; height: number }>();
+rememberFlowNodeMeasurements(firstBind, sizes);
+const nextBind = bindCopilotFlowNodes(
+  rebuilt.map((node) => ({ ...node, data: { ...node.data, detail: "updated" } })),
+  "agent-a",
+  sizes,
+);
+assert(nextBind[0].measured?.height === 104, "later object identity still carries the measured box");
+assert(nextBind[1].selected === true && nextBind[0].selected === false, "selection follows the live node");
+sizes.set("agent-a", { width: 200, height: 80 });
+rememberFlowNodeMeasurements(nextBind.slice(0, 1), sizes);
+assert(sizes.has("plan") && !sizes.has("agent-a"), "drop measurements for nodes that left the graph");
+
+const runningChip = latestLlmChip([{ kind: "llm", label: "qwen-plus", startTs: 10, endTs: null }]);
+assert(runningChip?.label === "qwen-plus 进行中" && runningChip.className === "active", "main-agent llm chip is live");
+const doneChip = latestLlmChip([
+  { kind: "llm", label: "qwen-plus", startTs: 10, endTs: 12.4, usage: { input_tokens: 1200, output_tokens: 80 } },
+]);
+assert(
+  doneChip?.label.includes("qwen-plus") && doneChip.label.includes("tok") === true,
+  "main-agent llm chip shows duration and tokens",
 );
 
 console.log("flowModel chain assertions passed");

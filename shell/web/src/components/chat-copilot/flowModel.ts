@@ -2,6 +2,8 @@ import type { Edge, Node } from "@xyflow/react";
 import type { PlanToolItem } from "../../protocol/events";
 import type { DelegationBlock } from "../../types";
 import {
+  displayAgentLabel,
+  displayPlanText,
   isSubAgentTool,
   runningAgentHint,
   SUBAGENT_STARTING_LABEL,
@@ -43,12 +45,13 @@ export interface FlowNodeData extends Record<string, unknown> {
   imagePath?: string;
   reportPath?: string;
   artifactKind?: "sql" | "table" | "excerpts" | "image" | "report" | "error";
+  subId?: number;
   startedAt?: number;
   endedAt?: number;
   durationLabel?: string;
 }
 
-/** DAG card keeps the plan hint; inspector skips it when `decision` already shows the same text. */
+/** DAG card shows a phase line; inspector skips it when it duplicates `decision`. */
 export function inspectorStatusDetail(data: Pick<FlowNodeData, "detail" | "decision">): string | undefined {
   const detail = data.detail?.trim();
   if (!detail) return undefined;
@@ -56,7 +59,94 @@ export function inspectorStatusDetail(data: Pick<FlowNodeData, "detail" | "decis
   return data.detail;
 }
 
+export function inspectorLead(
+  data: Pick<FlowNodeData, "kind" | "status" | "detail" | "decision" | "decisionTools">,
+  delegations: Array<Pick<DelegationBlock, "label" | "started_at">> = [],
+): string | undefined {
+  if (data.kind === "plan" && data.status !== "active" && !/总结/.test(data.detail ?? "")) {
+    const delegated = planDelegationLead(data.decisionTools, delegations);
+    if (delegated) return delegated;
+  }
+  return inspectorStatusDetail(data);
+}
+
+/** One-line query/args summary for inspector rows (head kept, whitespace collapsed). */
+export function clipInspectorSummary(text?: string | null, max = 72): string {
+  const flat = String(text || "").replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  if (flat.length <= max) return flat;
+  return `${flat.slice(0, Math.max(1, max - 1))}…`;
+}
+
+function planDelegationLead(
+  tools: FlowNodeData["decisionTools"],
+  delegations: Array<Pick<DelegationBlock, "label" | "started_at">>,
+): string | undefined {
+  const fromTools = (tools ?? [])
+    .map((tool) => displayAgentLabel(tool.label))
+    .filter(Boolean);
+  const names = fromTools.length > 0
+    ? fromTools
+    : delegations.map((block) => displayAgentLabel(block.label) || "").filter(Boolean);
+  if (names.length === 0) return undefined;
+  const starts = delegations.map((block) => block.started_at).filter((value) => value != null);
+  const parallel = names.length >= 2 && starts.length >= 2 && starts.every((value) => value === starts[0]);
+  const prefix = parallel ? "并行委派了" : "委派了";
+  const unique = [...new Set(names)];
+  if (unique.length === 1 && names.length > 1) {
+    const count = names.length === 2 ? "两个" : `${names.length} 个`;
+    return `${prefix}${count} ${unique[0]}`;
+  }
+  return `${prefix} ${unique.join("、")}`;
+}
+
 export type CopilotFlowNode = Node<FlowNodeData, "copilot">;
+
+export type FlowNodeSize = { width: number; height: number };
+
+/**
+ * React Flow hides a node until `measured` exists. It only keeps that size when
+ * the user-node object is reference-equal; live SSE rebuilds new objects, so we
+ * copy the last measured box onto the new object instead of letting it go hidden.
+ */
+export function bindCopilotFlowNodes(
+  nodes: CopilotFlowNode[],
+  selectedId: string | null,
+  previousMeasured: ReadonlyMap<string, FlowNodeSize>,
+): CopilotFlowNode[] {
+  return nodes.map((node) => {
+    const selected = node.id === selectedId;
+    const prev = previousMeasured.get(node.id);
+    const width = node.measured?.width ?? prev?.width;
+    const height = node.measured?.height ?? prev?.height;
+    const measured = width != null && height != null ? { width, height } : node.measured;
+    if (node.selected === selected && sameMeasured(node.measured, measured)) return node;
+    return measured ? { ...node, selected, measured } : { ...node, selected };
+  });
+}
+
+export function rememberFlowNodeMeasurements(
+  nodes: CopilotFlowNode[],
+  store: Map<string, FlowNodeSize>,
+): void {
+  const seen = new Set<string>();
+  for (const node of nodes) {
+    seen.add(node.id);
+    const width = node.measured?.width;
+    const height = node.measured?.height;
+    if (width != null && height != null) store.set(node.id, { width, height });
+  }
+  for (const id of [...store.keys()]) {
+    if (!seen.has(id)) store.delete(id);
+  }
+}
+
+function sameMeasured(
+  left: CopilotFlowNode["measured"] | undefined,
+  right: CopilotFlowNode["measured"] | undefined,
+): boolean {
+  return left?.width === right?.width && left?.height === right?.height;
+}
 
 export const FLOW_STATUS_LABEL: Record<FlowStatus, string> = {
   pending: "等待",
@@ -79,6 +169,30 @@ function formatLlmMs(ms?: number): string | undefined {
   if (ms == null || ms < 0) return undefined;
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+export function latestLlmChip(
+  spans: Array<{
+    kind?: string;
+    label?: string;
+    startTs?: number | null;
+    endTs?: number | null;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  }>,
+): FlowChip | undefined {
+  const span = spans.filter((item) => item.kind === "llm").at(-1);
+  if (!span) return undefined;
+  const running = span.endTs == null && span.startTs != null;
+  if (running) {
+    return { key: "llm", label: `${span.label || "LLM"} 进行中`, className: "active" };
+  }
+  const ms =
+    span.startTs != null && span.endTs != null ? Math.max(0, Math.round((span.endTs - span.startTs) * 1000)) : undefined;
+  const bits = [span.label, formatLlmMs(ms), formatTokenChip(span.usage?.input_tokens, span.usage?.output_tokens)].filter(
+    (part): part is string => Boolean(part),
+  );
+  if (bits.length === 0) return undefined;
+  return { key: "llm", label: bits.join(" · ") };
 }
 
 function llmChips(block: DelegationBlock): FlowChip[] {
@@ -277,7 +391,8 @@ function agentDetail(block: DelegationBlock, status: FlowStatus): string {
 }
 
 function toolChipLabel(name: string, label?: string): string {
-  if (label) return label;
+  const shown = displayAgentLabel(label);
+  if (shown) return shown;
   return isSubAgentTool(name) ? "子 Agent" : name;
 }
 
@@ -342,6 +457,44 @@ function rowY(row: number): number {
   return ORIGIN_Y + row * ROW_GAP;
 }
 
+function delegatedAgentNames(planTools: PlanToolItem[], delegations: DelegationBlock[]): string {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const push = (name: string | undefined) => {
+    const label = displayAgentLabel(name);
+    if (!label || seen.has(label)) return;
+    seen.add(label);
+    names.push(label);
+  };
+  for (const block of delegations) push(block.label);
+  for (const tool of planTools) push(toolChipLabel(tool.name, tool.label));
+  return names.join("、");
+}
+
+function planPhaseDetail(input: {
+  thinkingLive: boolean;
+  thinking: string;
+  planStatus: FlowStatus;
+  stageHint: string | null;
+  hasPlan: boolean;
+  anyAgent: boolean;
+  agentsSettled: boolean;
+  hasPending: boolean;
+  turnRunning: boolean;
+  names: string;
+}): string {
+  if (input.thinkingLive && input.thinking) return "正在思考如何拆解问题";
+  if (input.planStatus === "active") return input.stageHint || "正在规划，等待模型返回…";
+  if (input.hasPlan || input.anyAgent) {
+    if (input.turnRunning && input.agentsSettled && !input.hasPending) {
+      return "正在根据子 Agent 结果总结";
+    }
+    if (!input.turnRunning) return "已完成规划";
+    return input.names ? `已委派 ${input.names}` : "已确定下一步";
+  }
+  return "已完成规划";
+}
+
 function makeNode(id: string, col: number, y: number, data: FlowNodeData): CopilotFlowNode {
   return {
     id,
@@ -393,6 +546,7 @@ export function buildCopilotFlowGraph(input: CopilotFlowModelInput): {
   const hasPlan = Boolean(planHint) || planTools.length > 0;
   const anyAgent = delegations.length > 0;
   const agentsSettled = allAgentsSettled(delegations);
+  const hasPending = planTools.length > delegations.length;
 
   const planStatus: FlowStatus = !turnRunning
     ? "done"
@@ -400,21 +554,23 @@ export function buildCopilotFlowGraph(input: CopilotFlowModelInput): {
       ? "active"
       : "done";
 
-  let planDetail: string;
-  if (thinkingLive && thinking) {
-    planDetail = "正在思考如何拆解问题";
-  } else if (planStatus === "active") {
-    planDetail = stageHint || "正在规划，等待模型返回…";
-  } else if (hasPlan || anyAgent) {
-    planDetail = planHint || "已确定下一步";
-  } else {
-    planDetail = "已完成规划";
-  }
+  const planDetail = planPhaseDetail({
+    thinkingLive,
+    thinking,
+    planStatus,
+    stageHint,
+    hasPlan,
+    anyAgent,
+    agentsSettled,
+    hasPending,
+    turnRunning,
+    names: delegatedAgentNames(planTools, delegations),
+  });
 
   const decisionTools = planTools
     .map((tool) => ({
       label: toolChipLabel(tool.name, tool.label),
-      summary: tool.args_summary?.trim() || undefined,
+      summary: clipInspectorSummary(tool.args_summary) || undefined,
     }))
     .filter((tool) => tool.summary);
 
@@ -427,7 +583,7 @@ export function buildCopilotFlowGraph(input: CopilotFlowModelInput): {
       thinking: thinking || undefined,
       thinkingLive,
       prepLog: prepLog.length > 0 ? prepLog : undefined,
-      decision: planHint?.trim() || undefined,
+      decision: displayPlanText(planHint?.trim()) || undefined,
       decisionTools: decisionTools.length > 0 ? decisionTools : undefined,
       chips:
         planTools.length > 0
@@ -476,8 +632,8 @@ export function buildCopilotFlowGraph(input: CopilotFlowModelInput): {
         `pending-${pendingIdx}-${tool.name}`,
         {
           kind: "agent",
-          title: tool.label || toolLabel(tool.name, tool.config_path),
-          detail: planHint || SUBAGENT_WAITING_LABEL,
+          title: displayAgentLabel(tool.label) || toolLabel(tool.name, tool.config_path),
+          detail: displayPlanText(planHint) || SUBAGENT_WAITING_LABEL,
           status: waitingToStart ? "pending" : "active",
           chips: [{ key: tool.name, label: toolChipLabel(tool.name, tool.label) }],
           startedAt: turnRunning && !waitingToStart ? turnStartedAt : undefined,
@@ -493,6 +649,7 @@ export function buildCopilotFlowGraph(input: CopilotFlowModelInput): {
     const status = agentStatus(block);
     const running = status === "active";
     const agentId = agentNodeId(block.tool_call_id);
+    const reuseFrom = block.sub_id != null ? lastAgentByWorker.get(block.sub_id) : undefined;
     const workerLabel = workerReuseLabel(block);
     const pipelineSteps = pipelineStepsFromDelegation(block);
     const chips = [
@@ -506,12 +663,11 @@ export function buildCopilotFlowGraph(input: CopilotFlowModelInput): {
           className: stage.status === "active" ? "active" : "done",
         }))),
     ];
-    const reuseFrom = block.sub_id != null ? lastAgentByWorker.get(block.sub_id) : undefined;
     appendDelegatedAgent(
       agentId,
       {
         kind: "agent",
-        title: block.label ?? "子 Agent",
+        title: displayAgentLabel(block.label) || "子 Agent",
         detail: agentDetail(block, status),
         status,
         thinking: block.sub_thinking,
@@ -519,6 +675,7 @@ export function buildCopilotFlowGraph(input: CopilotFlowModelInput): {
         chips: chips.length > 0 ? chips : undefined,
         pipelineSteps: pipelineSteps.length > 0 ? pipelineSteps : undefined,
         error: block.error,
+        subId: block.sub_id != null && block.sub_id > 0 ? block.sub_id : undefined,
         startedAt: block.started_at,
         endedAt: block.ended_at,
       },

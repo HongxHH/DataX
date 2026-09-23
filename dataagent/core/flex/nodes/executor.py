@@ -92,17 +92,22 @@ _SUBAGENT_STATE_KEYS = (
 
 
 def _swarm_status_fields(raw_result: Any, tool_args: dict[str, Any] | None) -> dict[str, Any]:
+    """Carry worker identity on tool_status; never invent ``resumed`` from args alone."""
     extra: dict[str, Any] = {}
     raw = raw_result if isinstance(raw_result, dict) else {}
     args = tool_args if isinstance(tool_args, dict) else {}
     sub_id = raw.get("sub_id", args.get("sub_id"))
     try:
         if sub_id is not None and str(sub_id).strip() != "":
-            extra["sub_id"] = int(sub_id)
+            value = int(sub_id)
+            if value > 0:
+                extra["sub_id"] = value
     except (TypeError, ValueError):
         pass
     original = raw.get("original_msg")
-    if isinstance(original, dict) and "resumed" in original:
+    if "resumed" in raw:
+        extra["resumed"] = bool(raw["resumed"])
+    elif isinstance(original, dict) and "resumed" in original:
         extra["resumed"] = bool(original["resumed"])
     return extra
 

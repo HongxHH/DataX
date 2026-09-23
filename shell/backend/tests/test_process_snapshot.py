@@ -143,7 +143,7 @@ def test_snapshot_records_main_context_usage_and_ignores_sub():
     assert "sub_id" not in usage
 
 
-def test_snapshot_records_main_prompt_inventory_and_ignores_sub():
+def test_snapshot_records_main_and_sub_prompt_inventories():
     snap = ProcessSnapshot()
     snap.ingest(
         ShellEventType.PROMPT_INVENTORY,
@@ -153,6 +153,10 @@ def test_snapshot_records_main_prompt_inventory_and_ignores_sub():
             "ir_summaries": [{"tool": "sub_agent_tool", "nodes": ["Table"], "path": "/tmp/x"}],
             "content": "prompt",
         },
+    )
+    snap.ingest(
+        ShellEventType.PROMPT_INVENTORY,
+        {"ir_summary_count": 3, "workers": [], "sub_id": 2, "ir_summaries": [{"tool": "execute_sql", "path": "/tmp/ir"}]},
     )
     snap.ingest(
         ShellEventType.PROMPT_INVENTORY,
@@ -171,6 +175,10 @@ def test_snapshot_records_main_prompt_inventory_and_ignores_sub():
     assert "content" not in inventory
     assert "sub_id" not in inventory
     assert "secret" not in str(inventory)
+    subs = kwargs["sub_prompt_inventories"]
+    assert subs["2"]["ir_summary_count"] == 0
+    assert subs["2"]["sub_id"] == 2
+    assert "path" not in str(subs)
 
 
 def test_snapshot_keeps_thinking_tail_and_prep_checkpoints():

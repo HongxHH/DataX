@@ -195,6 +195,45 @@ def _extract_file_paths_from_args(tool_args: dict[str, Any], workspace: Path | N
     return found
 
 
+_STATE_PATH_KEYS = (
+    "csv_path",
+    "sql_path",
+    "recall_path",
+    "image_path",
+    "report_path",
+)
+
+
+def _walk_declared_path_values(obj: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(obj, dict):
+        for key in _STATE_PATH_KEYS:
+            raw = obj.get(key)
+            if isinstance(raw, str) and raw.strip():
+                found.append(raw.strip())
+        images = obj.get("images")
+        if isinstance(images, list):
+            for item in images:
+                if isinstance(item, dict):
+                    nested = item.get("image_path") or item.get("path")
+                    if isinstance(nested, str) and nested.strip():
+                        found.append(nested.strip())
+                elif isinstance(item, str) and item.strip():
+                    found.append(item.strip())
+        artifacts = obj.get("artifacts")
+        if isinstance(artifacts, list):
+            for item in artifacts:
+                if isinstance(item, str) and item.strip():
+                    found.append(item.strip())
+        original = obj.get("original_msg")
+        if isinstance(original, dict):
+            found.extend(_walk_declared_path_values(original))
+        nested_state = obj.get("state")
+        if isinstance(nested_state, dict):
+            found.extend(_walk_declared_path_values(nested_state))
+    return found
+
+
 _KNOWN_PATHS_KEY = "_ir_known_data_paths"
 _PATH_BEARING_NODE_TYPES = {"File", "Table", "Script", "Skill"}
 
@@ -284,7 +323,14 @@ class ResultIRConverter:
             _get_known_data_paths(context).update(content_paths)
 
         file_created = cls._file_pipeline(
-            context, tool_name, tool_args, action_node_label, workspace_path, pre_existing_files, content_paths
+            context,
+            tool_name,
+            tool_args,
+            action_node_label,
+            workspace_path,
+            pre_existing_files,
+            content_paths,
+            result=result,
         )
         file_newly_read = cls._read_file_pipeline(context, tool_name, tool_args, action_node_label)
         return content_created + file_created + file_newly_read
@@ -375,51 +421,21 @@ class ResultIRConverter:
         workspace: Path | None,
         pre_existing_files: dict[str, float] | None,
         content_paths: set[str],
+        result: Any = None,
     ) -> list[str]:
-        """文件Pipeline：workspace 变更文件 + 参数引用文件，共同补齐文件类 IR。"""
+        """文件Pipeline：workspace 变更文件 ∩ 声明路径 + 参数/state 引用文件。"""
         created: list[str] = []
         known_paths = _get_known_data_paths(context)
-
-        # Step A: workspace 快照差集（新增/修改文件）
-        if workspace and pre_existing_files is not None:
-            post_files = cls.snapshot_dir(workspace)
-            changed_files: list[str] = []
-            for fpath, mtime in post_files.items():
-                if fpath in content_paths:
-                    continue
-                old_mtime = pre_existing_files.get(fpath)
-                if old_mtime is None or mtime > old_mtime:
-                    changed_files.append(fpath)
-            changed_files.sort()
-
-            for fpath in changed_files:
-                p = Path(fpath)
-                ext = p.suffix.lower()
-
-                if ext in TABLE_FILE_EXTS:
-                    label = cls._register_table_node(context, action_node_label, tool_name, fpath)
-                elif ext in EXT_SCRIPT_TYPE_MAP:
-                    label = cls._register_script_node(
-                        context,
-                        action_node_label,
-                        tool_name,
-                        script_content=_safe_read_file(p),
-                        script_type=EXT_SCRIPT_TYPE_MAP[ext],
-                        path=fpath,
-                    )
-                else:
-                    label = cls._register_file_node(context, action_node_label, tool_name, path=fpath)
-
-                if label:
-                    created.append(label)
-                    known_paths.add(fpath)
-
-        # Step B: 参数引用文件补录（例如 write_file / file_saver 的 path）
-        # 按扩展名分流，与 Step A / read_file 一致，避免 .csv 被误建成 FileNode。
         arg_paths = _extract_file_paths_from_args(tool_args, workspace)
-        for fpath in sorted(arg_paths):
-            if fpath in known_paths:
-                continue
+        state_paths: set[str] = set()
+        for raw in _walk_declared_path_values(result):
+            normalized = _to_existing_file_path(raw, workspace)
+            if normalized:
+                state_paths.add(normalized)
+
+        def _attach(fpath: str) -> None:
+            if fpath in content_paths or fpath in known_paths:
+                return
             p = Path(fpath)
             ext = p.suffix.lower()
             if ext in TABLE_FILE_EXTS:
@@ -438,6 +454,28 @@ class ResultIRConverter:
             if label:
                 created.append(label)
                 known_paths.add(fpath)
+
+        # Step A: workspace 快照差集。仅当 result 声明了产物路径（子 Agent promote 后）才求交，
+        # 避免「args 里碰巧有一个已存在文件」把其它新文件滤掉。
+        if workspace and pre_existing_files is not None:
+            post_files = cls.snapshot_dir(workspace)
+            changed_files: list[str] = []
+            for fpath, mtime in post_files.items():
+                if fpath in content_paths:
+                    continue
+                old_mtime = pre_existing_files.get(fpath)
+                if old_mtime is None or mtime > old_mtime:
+                    changed_files.append(fpath)
+            if state_paths:
+                claimed = state_paths | arg_paths
+                changed_files = [fpath for fpath in changed_files if fpath in claimed]
+            changed_files.sort()
+            for fpath in changed_files:
+                _attach(fpath)
+
+        # Step B: 参数 / promote 后 state 声明路径补录
+        for fpath in sorted(arg_paths | state_paths):
+            _attach(fpath)
 
         return created
 

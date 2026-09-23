@@ -43,6 +43,15 @@ export function CopilotDagNode({ data, selected }: NodeProps<CopilotFlowNode>) {
         </span>
       </div>
       <div className="copilot-flow-detail copilot-dag-detail">{data.detail}</div>
+      {data.chips && data.chips.length > 0 ? (
+        <div className="copilot-dag-chips" aria-label="节点状态">
+          {data.chips.slice(0, isAgent ? 3 : 2).map((chip) => (
+            <span key={chip.key} className={`copilot-flow-chip ${chip.className ?? ""}`.trim()}>
+              {chip.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <Handle type="source" position={Position.Right} id="east" className={handleClass(isPlan || isAgent)} />
       <Handle type="source" position={Position.Bottom} id="south" className={handleClass(isPlan)} />
     </div>

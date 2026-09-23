@@ -302,10 +302,19 @@ def test_enrich_worker_tool_event_maps_busy_and_sub_id():
         }
     )
     assert extra["sub_id"] == 3
-    assert extra["resumed"] is True
+    assert "resumed" not in extra
     assert extra["worker_busy"] is True
     assert extra["status"] == "error"
     assert "换一个新的 worker" in extra["error"]
+
+
+def test_enrich_worker_tool_event_passes_through_kernel_resumed():
+    extra = enrich_worker_tool_event(
+        {"sub_id": 9, "resumed": False, "status": "success"},
+        {"sub_id": 9, "query": "q"},
+    )
+    assert extra["sub_id"] == 9
+    assert extra["resumed"] is False
 
 
 def test_accumulator_records_worker_reuse():

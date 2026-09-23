@@ -158,10 +158,13 @@ class Planner(BaseNode):
         await self._emit_progress_hint(writer, "正在组装规划提示词…")
         messages_to_process = self._prepare_messages_to_process(state, context, runtime, unpacked_data_ir)
         _dump_context_prompt_if_enabled(messages_to_process, state, runtime)
-        emit_prompt_inventory(
-            writer,
-            prompt_inventory_from_messages(messages_to_process, state=state),
-        )
+        try:
+            emit_prompt_inventory(
+                writer,
+                prompt_inventory_from_messages(messages_to_process, state=state),
+            )
+        except Exception as exc:
+            logger.warning("prompt_inventory emit skipped: {}", exc)
         terminal_mode = bool(state.get("terminal_mode", False))
         streamed_content = False
         reasoning_emitted = False

@@ -10,7 +10,11 @@ from typing import Any
 
 from shell.backend.config import SESSIONS_DIR
 from shell.backend.protocol.context_usage import is_main_agent_usage, list_usage_fields, normalize_context_usage
-from shell.backend.protocol.prompt_inventory import is_main_agent_inventory, normalize_prompt_inventory
+from shell.backend.protocol.prompt_inventory import (
+    is_main_agent_inventory,
+    normalize_prompt_inventory,
+    normalize_sub_prompt_inventories,
+)
 from shell.backend.session.clipping import (
     LOGS_MAX,
     MAIN_THINKING_MAX,
@@ -178,6 +182,7 @@ def _build_assistant_message(
     rewritten_query: str | None = None,
     context_usage: dict[str, Any] | None = None,
     prompt_inventory: dict[str, Any] | None = None,
+    sub_prompt_inventories: dict[str, Any] | None = None,
     otel_spans: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     msg: dict[str, Any] = {"role": "assistant", "content": content, "timestamp": _now_iso()}
@@ -219,6 +224,9 @@ def _build_assistant_message(
     )
     if compact_inventory and is_main_agent_inventory(compact_inventory):
         msg["prompt_inventory"] = compact_inventory
+    compact_subs = normalize_sub_prompt_inventories(sub_prompt_inventories)
+    if compact_subs:
+        msg["sub_prompt_inventories"] = compact_subs
     if otel_spans:
         msg["otel_spans"] = otel_spans[-SPANS_MAX:]
     return msg
