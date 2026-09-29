@@ -75,3 +75,14 @@ def has_blocking_label_schema_issue(issues: list[Any] | None) -> bool:
         if str(item).startswith(LABEL_SCHEMA_MISSING):
             return True
     return False
+
+
+def any_blocking_label_schema_issue(results: list[Any] | None) -> bool:
+    """True when any validation/generation result carries LABEL-001."""
+    for result in results or []:
+        issues = getattr(result, "issues", None)
+        if issues is None and isinstance(result, dict):
+            issues = result.get("issues")
+        if has_blocking_label_schema_issue(issues):
+            return True
+    return False

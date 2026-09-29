@@ -13,6 +13,7 @@
 from dataagent.agents.nl2sql.utils.label_contract import (
     LABEL_CASE_INSTEAD_OF_JOIN,
     LABEL_SCHEMA_MISSING,
+    any_blocking_label_schema_issue,
     check_enum_label_contract,
     has_blocking_label_schema_issue,
     schema_has_enum_lookup,
@@ -65,3 +66,13 @@ def test_label_contract_skips_when_no_label_ask():
         sql="SELECT usage_category, COUNT(*) FROM room_info GROUP BY usage_category",
     )
     assert issues == []
+
+
+def test_any_blocking_label_schema_issue_detects_label_001_only():
+    assert any_blocking_label_schema_issue(
+        [{"issues": [f"{LABEL_SCHEMA_MISSING}: missing ref_enum"]}, {"issues": []}]
+    )
+    assert not any_blocking_label_schema_issue(
+        [{"issues": [f"{LABEL_CASE_INSTEAD_OF_JOIN}: use JOIN"]}, {"issues": []}]
+    )
+    assert not any_blocking_label_schema_issue([])

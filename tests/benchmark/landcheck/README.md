@@ -90,6 +90,7 @@ E:\dev\Code\Agent\dataagent\.venv\Scripts\python.exe tests/benchmark/landcheck/r
 - `project_time` / `create_time` / 歧义「各年份」成对出题。
 - 套内面积与建筑面积分开出题。
 - 要中文标签：linking 应含 `ref_enum`，缺表 LABEL-001；未要求中文不强制 `ref_enum`。
+- LABEL-001（缺枚举表）在 reflector **立刻拒答**，不空耗改 SQL 重试；LABEL-002（有表却用 CASE）仍走改写。
 - `lc_usage_category_stats` 开 `require_schema_linking`。
 
 ## 安全负例口径

@@ -15,7 +15,10 @@ from typing import Any
 
 from dataagent.agents.nl2sql.errors import SchemaContractError, SQLSecurityValidationError
 from dataagent.agents.nl2sql.nodes.base_nl2sql_node import BaseNL2SQLNode
-from dataagent.agents.nl2sql.utils.label_contract import has_blocking_label_schema_issue
+from dataagent.agents.nl2sql.utils.label_contract import (
+    LABEL_SCHEMA_MISSING,
+    any_blocking_label_schema_issue,
+)
 from dataagent.agents.nl2sql.utils.nl2sql_utils import quote_sql_placeholders
 from dataagent.agents.nl2sql.workflow.state import NL2SQLState, Result
 from dataagent.utils.constants import DEFAULT_NL2SQL_REFLECTOR_THRESHOLD
@@ -45,15 +48,25 @@ class ReflectorNode(BaseNL2SQLNode):
             rule_ids = sorted(rule_id_set)
             detail = f"Blocked by SQL security rules: {', '.join(rule_ids)}" if rule_ids else "No safe SQL candidate."
             raise SQLSecurityValidationError(detail=detail)
+
+        # LABEL-001 is a schema gap: rewriting SQL cannot add ref_enum. Refuse immediately
+        # instead of burning reflector retries / LLM fix rounds.
+        if any_blocking_label_schema_issue(state["validation_results"]):
+            blocking = [
+                issue
+                for result in state["validation_results"]
+                for issue in (result.issues or [])
+                if str(issue).startswith(LABEL_SCHEMA_MISSING)
+            ]
+            raise SchemaContractError(
+                detail=(
+                    "Linked schema is missing the enum lookup table required for Chinese labels "
+                    f"(issues={blocking or LABEL_SCHEMA_MISSING})."
+                )
+            )
+
         best = max(safe_results or state["validation_results"], key=lambda result: result.score)
         if safe_results and ((best.score >= self.threshold and not best.need_ref) or state["ref_retries"] <= 0):
-            if state["ref_retries"] <= 0 and has_blocking_label_schema_issue(best.issues):
-                raise SchemaContractError(
-                    detail=(
-                        "Linked schema is missing the enum lookup table required for Chinese labels "
-                        f"(issues={best.issues})."
-                    )
-                )
             state["validation_results"] = safe_results
             state["proceed"] = True
             state["sql"] = best.sql
