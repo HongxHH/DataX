@@ -50,8 +50,8 @@ export BASE="http://localhost:${SEMANTIC_PORT}/api/semantic/v1"
 
 # 解压服务包后进入目录
 # 编辑 conf/semantic-service-application.properties：
-#   semantic_service.db.url=jdbc:postgresql://host.docker.internal:54321/semantic_layer
-#   （WSL 访问 Docker Desktop 中的 PG 常用 host.docker.internal）
+#   semantic_service.db.url=jdbc:postgresql://localhost:54321/semantic_layer
+#   （本机 Docker Desktop 映射常用 54321；WSL 内访问可用 host.docker.internal:54321）
 #   semantic_service.db.user=postgres
 #   semantic_service.db.password=postgres
 
