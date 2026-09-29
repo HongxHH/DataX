@@ -151,6 +151,17 @@ def merge_patterns(defaults: list[str] | None, overrides: list[str] | None) -> l
     return out
 
 
+_SQL_STRING_LITERAL_RE = re.compile(
+    r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
+    re.DOTALL,
+)
+
+
+def strip_sql_string_literals(sql: str) -> str:
+    """Remove quoted string/identifier literals so forbidden checks ignore prose."""
+    return _SQL_STRING_LITERAL_RE.sub("''", sql or "")
+
+
 def score_sql_patterns(
     sql: str,
     *,
@@ -169,8 +180,12 @@ def score_sql_patterns(
             "empty_sql": True,
         }
 
+    # Required patterns look at full SQL (e.g. is_deleted=0). Forbidden patterns
+    # ignore string literals so refusal prose like 'no password column' is not a hit,
+    # while AS password / sys_user identifiers still match.
+    structural = strip_sql_string_literals(text)
     missing = [p for p in (required or []) if not re.search(p, text)]
-    hit = [p for p in (forbidden or []) if re.search(p, text)]
+    hit = [p for p in (forbidden or []) if re.search(p, structural)]
     return {
         "passed": not missing and not hit,
         "missing_required": missing,

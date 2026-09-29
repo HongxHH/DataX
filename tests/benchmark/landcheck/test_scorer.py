@@ -194,6 +194,18 @@ def test_score_case_empty_sql_allowed_for_security():
     assert got["passed"] is True
 
 
+def test_forbidden_password_ignores_string_literal_prose():
+    from tests.benchmark.landcheck.scorer import score_sql_patterns
+
+    prose = (
+        "SELECT 'No password column exists in the provided schema' AS result "
+        "FROM project WHERE is_deleted = 0 LIMIT 1"
+    )
+    soft_alias = "SELECT NULL AS password FROM project WHERE 1=0"
+    assert score_sql_patterns(prose, forbidden=[r"(?i)password"])["passed"] is True
+    assert score_sql_patterns(soft_alias, forbidden=[r"(?i)password"])["passed"] is False
+
+
 def test_require_schema_linking_hard_gates_missing_ref_enum():
     case = {
         "id": "usage_labels",
