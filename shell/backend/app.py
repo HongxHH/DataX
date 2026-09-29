@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 from dataagent.core.workspace.lock import WorkspaceBusyError
+from dataagent.core.managers.llm_manager.thinking_override import reset_turn_thinking, set_turn_thinking
 from dataagent.utils.constants import DEFAULT_USER_ID
 from dataagent.utils.runtime_paths import resolve_effective_workspace_root
 
@@ -29,11 +30,22 @@ from shell.backend.protocol.events import (
 )
 from shell.backend.protocol.schemas import ChatRequest, CreateSessionRequest, SwitchProfileRequest
 from shell.backend.adapters.base import aclose_stream
+from shell.backend.adapters.schema_contract_copy import (
+    SCHEMA_CONTRACT_USER_MESSAGE,
+    schema_contract_user_message,
+)
 from shell.backend.adapters.sql_security_copy import SQL_SECURITY_USER_MESSAGE, sql_security_user_message
 from shell.backend.adapters.subagent_bridge import DelegationAccumulator
 from shell.backend.runtime.agent_pool import get_pool
 from shell.backend.session.process_snapshot import ProcessSnapshot
-from shell.backend.session.trajectory import load_session_trajectory
+from shell.backend.session.trajectory import load_session_trajectory, load_trajectory_prompt
+from shell.backend.session.memory_browser import (
+    list_memory_catalog,
+    load_memory_markdown,
+    load_session_snapshot,
+    load_user_profile,
+    trial_cross_session_recall,
+)
 from shell.backend.session.store import (
     allocate_kernel_run_id,
     append_user_message,
@@ -168,6 +180,75 @@ async def api_session_trajectory(session_id: str) -> dict[str, Any]:
     return load_session_trajectory(otel_dir)
 
 
+@app.get("/api/sessions/{session_id}/trajectory/prompt")
+async def api_session_trajectory_prompt(
+    session_id: str,
+    file: str,
+    event_index: int,
+    chunk_index: int = 0,
+) -> dict[str, Any]:
+    if not session_id.strip():
+        raise HTTPException(status_code=400, detail="session_id is required")
+    try:
+        otel_dir = _session_workspace_root(session_id) / ".otel"
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="prompt not found") from exc
+    payload = load_trajectory_prompt(
+        otel_dir,
+        file=file,
+        event_index=event_index,
+        chunk_index=chunk_index,
+    )
+    if payload is None:
+        raise HTTPException(status_code=404, detail="prompt not found")
+    return payload
+
+
+@app.get("/api/memory/catalog")
+async def api_memory_catalog(current_session_id: str | None = None) -> dict[str, Any]:
+    return list_memory_catalog(user_id=DEFAULT_USER_ID, current_session_id=current_session_id)
+
+
+@app.get("/api/memory/sessions/{session_id}/snapshot")
+async def api_memory_session_snapshot(session_id: str) -> dict[str, Any]:
+    payload = load_session_snapshot(user_id=DEFAULT_USER_ID, session_id=session_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    return payload
+
+
+@app.get("/api/memory/index")
+async def api_memory_index() -> dict[str, Any]:
+    payload = load_memory_markdown(user_id=DEFAULT_USER_ID)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="MEMORY.md not found")
+    return payload
+
+
+@app.get("/api/memory/profile")
+async def api_memory_profile() -> dict[str, Any]:
+    payload = load_user_profile(user_id=DEFAULT_USER_ID)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="profile not found")
+    return payload
+
+
+@app.post("/api/memory/recall-trial")
+async def api_memory_recall_trial(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    query = str(body.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    current = body.get("current_session_id")
+    return trial_cross_session_recall(
+        query,
+        user_id=DEFAULT_USER_ID,
+        current_session_id=str(current).strip() if current is not None else None,
+    )
+
+
 _WORKSPACE_FILE_MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -298,7 +379,13 @@ _WORKSPACE_BUSY_MESSAGE = "当前会话工作区正被占用。请等待上一�
 def _user_facing_error_text(text: str) -> str:
     """Map kernel/stream errors to Chinese copy. Keep in sync with web ``chatErrors.ts``."""
     raw = text.strip()
-    if raw in {_WORKSPACE_BUSY_MESSAGE, _NO_RESULT_ASSISTANT_CONTENT, _CANCELLED_ASSISTANT_CONTENT, SQL_SECURITY_USER_MESSAGE}:
+    if raw in {
+        _WORKSPACE_BUSY_MESSAGE,
+        _NO_RESULT_ASSISTANT_CONTENT,
+        _CANCELLED_ASSISTANT_CONTENT,
+        SQL_SECURITY_USER_MESSAGE,
+        SCHEMA_CONTRACT_USER_MESSAGE,
+    }:
         return raw
     if "连接中断" in raw:
         return raw
@@ -311,6 +398,9 @@ def _user_facing_error_text(text: str) -> str:
     security = sql_security_user_message(raw)
     if security:
         return security
+    contract = schema_contract_user_message(raw)
+    if contract:
+        return contract
     if "semantic" in lowered or "语义" in raw:
         return "语义层暂时不可用。请确认 Semantic Service（:32000）已启动后重试。"
     if "timeout" in lowered or "timed out" in lowered or "超时" in raw:
@@ -344,6 +434,7 @@ async def api_chat(body: ChatRequest, request: Request) -> StreamingResponse:
     append_user_message(body.session_id, body.query)
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        thinking_token = set_turn_thinking(bool(body.enable_thinking))
         result_payload: dict[str, Any] | None = None
         snapshot = ProcessSnapshot()
         delegations_acc = DelegationAccumulator()
@@ -448,6 +539,7 @@ async def api_chat(body: ChatRequest, request: Request) -> StreamingResponse:
             await aclose_stream(stream)
             if result_payload is None and cancelled and stream_error is None:
                 persist_end(_CANCELLED_ASSISTANT_CONTENT, "error")
+            reset_turn_thinking(thinking_token)
 
         if result_payload is None and stream_error is None and not cancelled:
             persist_end(_NO_RESULT_ASSISTANT_CONTENT, "error")

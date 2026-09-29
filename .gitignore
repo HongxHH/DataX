@@ -264,9 +264,17 @@ datapilot.db
 #   dataagent/  shell/  schema/
 #   docs/images/README.md + workbench|delegation|context|trajectory.png
 #   LICENSE  NOTICE  README.md  pyproject.toml  .env.example  .gitignore
-# Everything else in this working copy stays local.
+# Everything else in this working copy stays local — except Landcheck L1
+# golden-set / contract unit tests below (needed for run_ci.py regression).
 # =============================================================================
-/tests/
+/tests/*
+!/tests/benchmark/
+!/tests/test_nl2sql_security_sensitive.py
+!/tests/test_nl2sql_enum_linking.py
+!/tests/test_nl2sql_label_contract.py
+!/tests/test_nl2sql_order_contract.py
+/tests/benchmark/*
+!/tests/benchmark/landcheck/
 /scripts/
 /openspec/
 /.cursor/

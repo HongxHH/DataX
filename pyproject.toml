@@ -142,8 +142,14 @@ python_functions = ["test_*"]
 #      @pytest.mark.asyncio in strict mode)
 #   2. Long-running real LLM calls during `pytest tests/`
 # Run them explicitly as scripts: `uv run tests/e2e/bio_lab/test_performance.py`
+#
+# Landcheck NL2SQL CI (no LLM): `python tests/benchmark/landcheck/run_ci.py`
+# Optional gold-vs-DB: add `--validate-gold`. Agent full suite stays manual/nightly.
 addopts = "--verbose --color=yes --ignore=tests/e2e/bio_lab"
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "landcheck_ci: fast landcheck NL2SQL unit checks (see tests/benchmark/landcheck/run_ci.py)",
+]
 
 [tool.coverage.run]
 source = ["dataagent"]

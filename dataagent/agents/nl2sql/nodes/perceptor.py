@@ -20,6 +20,8 @@ import httpx
 from dataagent.actions.tools.semantic_tool.semantic_client import SemanticServiceClient, SemanticServiceError
 from dataagent.agents.nl2sql.errors import SchemaNotFoundError, SemanticServiceCallError
 from dataagent.agents.nl2sql.nodes.base_nl2sql_node import BaseNL2SQLNode
+from dataagent.agents.nl2sql.security.rules import SENSITIVE_TABLE_NAMES
+from dataagent.agents.nl2sql.utils.label_contract import question_needs_enum_labels
 from dataagent.agents.nl2sql.utils.nl2sql_utils import (
     iter_semantic_column_payloads,
     schema_to_ddl,
@@ -91,6 +93,13 @@ class PerceptorNode(BaseNL2SQLNode):
             table_ids = [table_id for table_id in self._join_table_ids(join_entry) if table_id in dt_desc]
             if any(table_id in column_tables for table_id in table_ids):
                 dt_set.update(table_ids)
+        question_text = " ".join(str(item) for item in (keywords or []) if item)
+        if question_needs_enum_labels(question_text):
+            # Catalog name/description match (works even when joinable API omits logical edges).
+            dt_set.update(enum_lookup_table_ids(dt_desc))
+            # Join-graph path: column-level enum edges (room_info.usage_category → ref_enum.enum_code).
+            dt_set.update(enum_tables_reachable_from_hits(column_tables, joins_raw, self._join_table_ids))
+        dt_set = {table_id for table_id in dt_set if not _is_sensitive_table_id(table_id)}
         schema = self._schema_for_tables(dt_set, dt_desc)
         column_table_names = {dt.split(".", 1)[1] for dt in column_tables if "." in dt}
         recalled_tables = {dt.split(".", 1)[1] for dt in dt_set if "." in dt}
@@ -277,3 +286,43 @@ class PerceptorNode(BaseNL2SQLNode):
         if exc.error_message:
             parts.append(f"error_message={exc.error_message}")
         return ", ".join(parts)
+
+
+_ENUM_DESC_HINTS = ("枚举", "字典", "中文标签", "中文含义", "代码→中文", "代码->中文")
+
+
+def enum_lookup_table_ids(dt_desc: dict[str, str]) -> set[str]:
+    """Catalog tables that look like enum dictionaries (name/description), not FK 1-hop."""
+    found: set[str] = set()
+    for table_id, description in (dt_desc or {}).items():
+        table_name = str(table_id).split(".", 1)[-1].lower()
+        desc = str(description or "")
+        if table_name == "ref_enum" or table_name.endswith("_enum"):
+            found.add(table_id)
+            continue
+        if any(hint in desc for hint in _ENUM_DESC_HINTS):
+            found.add(table_id)
+    return found
+
+
+def enum_tables_reachable_from_hits(
+    column_tables: set[str],
+    joins_raw: list[Any],
+    join_table_ids_fn,
+) -> set[str]:
+    """Enum dictionary tables that are 1-hop join neighbors of column-search hits."""
+    found: set[str] = set()
+    for join_entry in joins_raw or []:
+        table_ids = [tid for tid in join_table_ids_fn(join_entry) if tid]
+        if not any(tid in column_tables for tid in table_ids):
+            continue
+        for tid in table_ids:
+            name = str(tid).split(".", 1)[-1].lower()
+            if name == "ref_enum" or name.endswith("_enum"):
+                found.add(tid)
+    return found
+
+
+def _is_sensitive_table_id(table_id: str) -> bool:
+    name = str(table_id).split(".", 1)[-1].lower()
+    return name in SENSITIVE_TABLE_NAMES

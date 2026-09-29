@@ -68,6 +68,20 @@ _ALLOWED_FUNCTIONS = frozenset(
     }
 )
 _MAX_STRING_BYTES = 16 * 1024 * 1024
+# Credential / auth assets are never valid NL2SQL sources, even if linking recalled them.
+SENSITIVE_TABLE_NAMES = frozenset({"sys_user", "sys_users"})
+SENSITIVE_COLUMN_NAMES = frozenset(
+    {
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "api_key",
+        "access_token",
+        "private_key",
+        "secret_key",
+    }
+)
 
 
 def _resolve_expression_types(names: tuple[str, ...]) -> tuple[type[Any], ...]:
@@ -132,6 +146,38 @@ _FORBIDDEN_QUERY_TYPES = _resolve_expression_types(
         "Window",
     )
 )
+
+
+def check_sensitive_assets(statement: exp.Expression) -> list[SecurityViolation]:
+    """Reject credential tables/columns and aliases that reconstruct those names."""
+    for table in statement.find_all(exp.Table):
+        name = _normalize_identifier(table.name)
+        if name in SENSITIVE_TABLE_NAMES:
+            return [
+                SecurityViolation(
+                    "SENSITIVE-001",
+                    f"Source table is not allowed in NL2SQL queries: {table.sql()}.",
+                )
+            ]
+    for column in statement.find_all(exp.Column):
+        name = _normalize_identifier(column.name)
+        if name in SENSITIVE_COLUMN_NAMES:
+            return [
+                SecurityViolation(
+                    "SENSITIVE-002",
+                    f"Column is not allowed in NL2SQL queries: {column.sql()}.",
+                )
+            ]
+    for alias in statement.find_all(exp.Alias):
+        alias_name = _normalize_identifier(str(alias.alias or ""))
+        if alias_name in SENSITIVE_COLUMN_NAMES:
+            return [
+                SecurityViolation(
+                    "SENSITIVE-002",
+                    f"Sensitive column alias is not allowed in NL2SQL queries: {alias.alias}.",
+                )
+            ]
+    return []
 
 
 def check_allowed_functions(
@@ -397,7 +443,8 @@ def _is_allowed_join_type(join: exp.Join) -> bool:
 
 
 def _returns_unfiltered_rows(statement: exp.Expression) -> bool:
-    if not isinstance(statement, (exp.Select, exp.Union, exp.Except, exp.Intersect)):
+    # Keep in lockstep with checker root allowlist (SELECT / UNION only).
+    if not isinstance(statement, (exp.Select, exp.Union)):
         return False
     if isinstance(statement, exp.Union):
         return _union_returns_unfiltered_rows(statement)

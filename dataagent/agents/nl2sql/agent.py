@@ -270,6 +270,8 @@ class NL2SQLAgent(BaseAgent):
                 question = str(message or initial_state.pop("question", None) or initial_state.pop("user_query", ""))
                 initial_state.setdefault("session_id", session_id)
                 state = get_default_state(question=question, **{**self.state_defaults, **(initial_state or {})})
+                # Same as chat(): enable per-run prompt dumps when DATAAGENT_CONTEXT_DUMP is on.
+                self._distribute_context_dump_dir(initial_state, session_id=session_id)
                 async for item in self._yield_context_stream(
                     state=state,
                     question=question,

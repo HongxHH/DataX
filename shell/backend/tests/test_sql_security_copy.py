@@ -78,3 +78,16 @@ def test_shell_maps_security_error_without_echoing_sql():
     assert extra["error"] == SQL_SECURITY_USER_MESSAGE
     assert _user_facing_error_text(raw) == SQL_SECURITY_USER_MESSAGE
     assert not is_sql_security_error("SQL 服务调用失败 NL2SQL-SQL-001")
+
+
+def test_shell_maps_sensitive_and_schema_contract_errors():
+    from shell.backend.adapters.schema_contract_copy import SCHEMA_CONTRACT_USER_MESSAGE
+
+    sensitive = "Blocked by SQL security rules: SENSITIVE-001, SENSITIVE-002"
+    assert sql_security_user_message(sensitive) == SQL_SECURITY_USER_MESSAGE
+    assert "sys_user" not in SQL_SECURITY_USER_MESSAGE
+
+    contract = "SchemaContractError: Linked schema is missing the enum lookup table required for Chinese labels"
+    assert _user_facing_error_text(contract) == SCHEMA_CONTRACT_USER_MESSAGE
+    extra = enrich_worker_tool_event({"error": contract, "status": "error"})
+    assert extra["error"] == SCHEMA_CONTRACT_USER_MESSAGE

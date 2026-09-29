@@ -34,7 +34,11 @@ TABLE_LLM = {
     "contract_info": "土地/房产合同。total_area 大部分为空，问面积不要用本合同面积，改用测绘或房间汇总。",
     "planning_review_form": "规划审查意见书主表，一个文件一份。",
     "planning_review_row": "规划审查明细行。挂 planning_review_form_id，不要只按 project_id 去乘房间。",
-    "ref_enum": "枚举释义。翻译 usage_category / floor_area_type 等代码必须 JOIN 本表，并带 enum_group。",
+    "ref_enum": (
+        "枚举字典表（代码→中文标签/含义）。"
+        "翻译 usage_category / floor_area_type 等代码必须 JOIN 本表，并带 enum_group；"
+        "不要用 CASE 硬编码中文。"
+    ),
     "sys_user": "系统用户。禁止查询 password 列。",
     "usage_config": "房间用途匹配规则。usage_pattern 是测绘原文，usage_category 是标准分类代码。",
 }
@@ -249,6 +253,12 @@ def build(tables: list[dict]) -> dict:
             }
         )
 
+    # Logical enum dictionary edge: joinable-tables is column-level, so emit both
+    # table_join and column_join (expression keeps the required enum_group filter).
+    _enum_join_expr = (
+        "{source}.usage_category = {target}.enum_code AND {target}.enum_group = 'usage_category'"
+    )
+    _enum_join_intent = "房间用途代码翻译为中文标签；必须带 enum_group='usage_category'"
     relationships.append(
         {
             "typeName": "table_join_relationship",
@@ -256,9 +266,27 @@ def build(tables: list[dict]) -> dict:
             "end2": {"typeName": "data_table", "uniqueAttributes": {"qualifiedName": qn_table("ref_enum")}},
             "attributes": {
                 "join_type": "LEFT JOIN",
-                "expression": "{source}.usage_category = {target}.enum_code AND {target}.enum_group = 'usage_category'",
+                "expression": _enum_join_expr,
                 "cardinality": "N:1",
-                "intent": "房间用途代码翻译为中文；必须带 enum_group='usage_category'",
+                "intent": _enum_join_intent,
+            },
+        }
+    )
+    relationships.append(
+        {
+            "typeName": "column_join_relationship",
+            "end1": {
+                "typeName": "data_column",
+                "uniqueAttributes": {"qualifiedName": qn_col("room_info", "usage_category")},
+            },
+            "end2": {
+                "typeName": "data_column",
+                "uniqueAttributes": {"qualifiedName": qn_col("ref_enum", "enum_code")},
+            },
+            "attributes": {
+                "join_type": "LEFT_JOIN",
+                "expression": _enum_join_expr,
+                "intent": _enum_join_intent,
             },
         }
     )
@@ -306,14 +334,14 @@ def build(tables: list[dict]) -> dict:
         },
         {
             "sqlId": "landcheck_usage_stats",
-            "query": "按用途和计容类型统计房间数和建筑面积",
-            "intent": "用途用 usage_category，中文标签 LEFT JOIN ref_enum",
+            "query": "按用途统计房间数，给出用途代码和中文标签",
+            "intent": "问中文标签时用途用 usage_category，LEFT JOIN ref_enum；未要求中文时不要硬塞 ref_enum",
             "expression": (
-                "SELECT r.usage_category, e.enum_label, r.floor_area_type, COUNT(*) AS rooms, "
-                "ROUND(SUM(r.building_area), 2) AS area FROM room_info r "
+                "SELECT r.usage_category, e.enum_label, COUNT(*) AS rooms "
+                "FROM room_info r "
                 "LEFT JOIN ref_enum e ON e.enum_group = 'usage_category' AND e.enum_code = r.usage_category "
                 "WHERE r.is_deleted = 0 "
-                "GROUP BY r.usage_category, e.enum_label, r.floor_area_type ORDER BY rooms DESC"
+                "GROUP BY r.usage_category, e.enum_label ORDER BY rooms DESC"
             ),
             "relatedTables": ["room_info", "ref_enum"],
         },

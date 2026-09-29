@@ -105,13 +105,24 @@ def iter_nl2sql_custom_events(
 
 
 def format_nl2sql_result(state: dict[str, Any]) -> dict[str, Any]:
-    sql = str(state.get("sql") or "")
+    sql = str(state.get("sql") or "").strip()
     rows_preview = state.get("rows_preview")
+    if not sql:
+        # Empty SQL is a refusal / exhausted path — do not present as a successful landcheck answer.
+        return {
+            "success": False,
+            "message": "未生成可执行的 SQL（可能因安全规则或 Schema 不足被拒绝）。请改问后再试。",
+            "candidates": [],
+            "sql": "",
+            "confidence": state.get("confidence"),
+            "columns": state.get("columns"),
+            "rows_preview": None,
+            "session_id": state.get("session_id"),
+        }
+
     message = "SQL 已生成。"
     if rows_preview:
         message = "SQL 已生成并执行，结果见下方表格。"
-    if not sql:
-        message = "未生成可执行的 SQL。"
 
     candidates = _collect_nl2sql_candidates(state)
     if not candidates and sql:
@@ -127,8 +138,7 @@ def format_nl2sql_result(state: dict[str, Any]) -> dict[str, Any]:
         "rows_preview": rows_preview,
         "session_id": state.get("session_id"),
     }
-    if sql:
-        payload["sql_fingerprint"] = _hash_sql(sql)
+    payload["sql_fingerprint"] = _hash_sql(sql)
     return payload
 
 

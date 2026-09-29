@@ -55,13 +55,19 @@ class SelectorNode(BaseNL2SQLNode):
                         del r["id"]
                     break
             else:
-                # skip if fail
-                logger.warning("Selector failed.")
-                sel = [{"score": 1, "issues": []}] * len(state["execution_results"])
+                # Fail closed: do not pretend every candidate scored 1.0.
+                logger.warning("Selector failed; assigning zero confidence.")
+                sel = [{"score": 0.0, "issues": ["selector_llm_failed"]}] * len(
+                    state["execution_results"]
+                )
             for e, s in zip(state["execution_results"], sel, strict=True):
                 e.confidence = s["score"]
                 e.issues = e.issues + s["issues"]
-            best = max(state["execution_results"], key=lambda e: (e.confidence, e.score))
+            # Prefer higher confidence, then non-error candidates.
+            best = max(
+                state["execution_results"],
+                key=lambda e: (e.confidence, e.score, 0 if e.error else 1),
+            )
             p = "\n".join([f"Score: {e.confidence:.2f}, Issues: {e.issues}" for e in state["execution_results"]])
         message = f"=== Selector ===\n{p}"
         candidate_summaries = [

@@ -123,6 +123,8 @@ uv run -m dataagent --config dataagent/core/flex/examples/landcheck_nl2sql.yaml
 
 抽检口径：智谷约 535 间、建筑面积约 395113；房间数最多约嘉顺苑 5989 间。
 
+NL2SQL L1 黄金集（执行一致率）：见 `tests/benchmark/landcheck/README.md`。
+
 ## 改了 schema.sql 之后
 
 ```powershell
@@ -130,3 +132,5 @@ uv run -m dataagent --config dataagent/core/flex/examples/landcheck_nl2sql.yaml
 ```
 
 然后重新 bulk 导入（或先清库）。
+
+Phase 3 起 seed 含 `room_info.usage_category → ref_enum.enum_code` 列级 join，以及更明确的枚举表描述。若本地 Semantic Service 仍是旧 seed，目录名匹配扩边仍可用；要让 joinable-tables 返回该边需重新导入。

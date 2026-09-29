@@ -31,6 +31,7 @@ def check_sql(sql: str, *, dialect: str, schema: dict[str, Any]) -> SecurityChec
         check_allowed_query_syntax,
         check_resource_usage,
         check_semantic_schema,
+        check_sensitive_assets,
     )
 
     if len((sql or "").encode("utf-8")) > 1024 * 1024:
@@ -42,9 +43,12 @@ def check_sql(sql: str, *, dialect: str, schema: dict[str, Any]) -> SecurityChec
     executable = [statement for statement in statements if statement is not None]
     if len(executable) != 1:
         return SecurityCheckResult([SecurityViolation("SQL-001", "Exactly one SQL statement is allowed.")])
-    allowed = (exp.Select, exp.Union, exp.Except, exp.Intersect)
+    # Keep in lockstep with rules.check_allowed_query_syntax (SELECT / UNION only).
+    allowed = (exp.Select, exp.Union)
     if not isinstance(executable[0], allowed):
-        return SecurityCheckResult([SecurityViolation("SQL-001", "Only read-only SELECT queries are allowed.")])
+        return SecurityCheckResult(
+            [SecurityViolation("SQL-001", "Only read-only SELECT / UNION queries are allowed.")]
+        )
     statement = executable[0]
     if any(not select.expressions for select in statement.find_all(exp.Select)):
         return SecurityCheckResult([SecurityViolation("SQL-001", "Every SELECT must contain a projection.")])
@@ -56,6 +60,9 @@ def check_sql(sql: str, *, dialect: str, schema: dict[str, Any]) -> SecurityChec
             return SecurityCheckResult([SecurityViolation("SQL-001", f"SQL normalization failed: {exc}")])
         sql = normalized_sql
     violations = _check_read_only_structure(statement)
+    if violations:
+        return SecurityCheckResult(violations)
+    violations.extend(check_sensitive_assets(statement))
     if violations:
         return SecurityCheckResult(violations)
     violations.extend(check_resource_usage(statement))

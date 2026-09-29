@@ -15,7 +15,8 @@ AGENT_CONFIG:
   max_iter: 12
   enable_human_feedback: false
   terminal_mode: false
-  # 跨会话召回读 snapshot/MEMORY.md；portraiter 只在此开关为 true 时写入，planner 也只在此时注入命中内容
+  # portraiter：写 snapshot/profile，并注入本会话 Snapshot/Profile 进 prompt
+  # 跨会话召回由 CROSS_SESSION_RECALL 独立控制；命中内容不再依赖本开关才能注入
   enable_portrait: true
 
 MODEL:
@@ -84,7 +85,8 @@ WORKSPACE:
     - "$env{DATAAGENT_REPO_ROOT}/dataagent/core/flex/examples"
     - "$env{DATAAGENT_REPO_ROOT}/schema/landcheck_docs"
 
-# 检索依赖 enable_portrait 写出的 snapshot / MEMORY.md；只开本段会一直「未命中」
+# 跨会话召回：读历史 snapshot / MEMORY.md，写入 state 并由 planner 注入 Cross-Session Memories。
+# 仍需历史会话曾开过 enable_portrait（或等价写过 snapshot）才有可检索语料。
 CROSS_SESSION_RECALL:
   enable: true
 

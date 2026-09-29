@@ -15,6 +15,7 @@ from __future__ import annotations
 __all__ = [
     "LLMOutputParseError",
     "NL2SQLError",
+    "SchemaContractError",
     "SchemaNotFoundError",
     "SemanticServiceCallError",
     "SQLSecurityValidationError",
@@ -108,3 +109,13 @@ class SQLSecurityValidationError(NL2SQLError):
     http_status = 422
     retryable = False
     component = "sql_security"
+
+
+class SchemaContractError(NL2SQLError):
+    """Raised when linked schema cannot satisfy a deterministic question contract."""
+
+    code = "NL2SQL-META-003"
+    message = "当前 Schema 不足以正确回答该问题"
+    http_status = 422
+    retryable = False
+    component = "schema_contract"

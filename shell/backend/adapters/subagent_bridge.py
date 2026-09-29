@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from shell.backend.adapters.nl2sql_stages import NL2SQL_NODE_STAGES
+from shell.backend.adapters.schema_contract_copy import schema_contract_user_message
 from shell.backend.adapters.sql_security_copy import sql_security_user_message
 from shell.backend.protocol.events import ShellEventType, shell_event
 from shell.backend.session.live_span import normalize_live_span
@@ -120,6 +121,11 @@ def enrich_worker_tool_event(data: dict[str, Any], tool_args: dict[str, Any] | N
     if security:
         extra["status"] = "error"
         extra["error"] = security
+        return extra
+    contract = schema_contract_user_message(data.get("summary"), data.get("error"))
+    if contract:
+        extra["status"] = "error"
+        extra["error"] = contract
     return extra
 
 
@@ -457,6 +463,11 @@ class DelegationAccumulator:
         if security:
             error_text = security
             status = "error"
+        else:
+            contract = schema_contract_user_message(error_text, data.get("summary"))
+            if contract:
+                error_text = contract
+                status = "error"
         if status in ("error", "failed", "failure") or worker.get("worker_busy"):
             block["status"] = "error"
             if error_text:

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-SQL_SECURITY_USER_MESSAGE = "该查询被安全规则拦截，只允许只读 SELECT。请改问后再试。"
+# Covers write/DDL blocks and SENSITIVE-* (password / sys_user), not only "SELECT-only".
+SQL_SECURITY_USER_MESSAGE = "该查询涉及敏感数据或违反安全规则，已拒绝执行。请改问后再试。"
 
 _SECURITY_MARKERS = (
     "nl2sql-sec-001",
@@ -13,6 +14,8 @@ _SECURITY_MARKERS = (
     "sqlsecurityvalidationerror",
     "only read-only select queries are allowed",
     "sql security rules",
+    "sensitive-001",
+    "sensitive-002",
 )
 
 

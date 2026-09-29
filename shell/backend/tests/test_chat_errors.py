@@ -24,8 +24,15 @@ def test_user_facing_error_maps_worker_busy():
 def test_user_facing_error_maps_sql_security_without_sql():
     raw = "Blocked by SQL security rules: SQL-001 DELETE FROM lc_project"
     text = _user_facing_error_text(raw)
-    assert "只允许只读 SELECT" in text
+    assert "敏感数据或违反安全规则" in text
     assert "DELETE" not in text
+
+
+def test_user_facing_error_maps_schema_contract():
+    raw = "NL2SQL-META-003: Linked schema is missing the enum lookup table"
+    text = _user_facing_error_text(raw)
+    assert "数据表不足以" in text
+    assert "enum" not in text.lower()
 
 
 def test_user_facing_error_keeps_connection_interrupt_copy():

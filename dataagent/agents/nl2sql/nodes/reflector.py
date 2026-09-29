@@ -13,8 +13,9 @@
 import json
 from typing import Any
 
-from dataagent.agents.nl2sql.errors import SQLSecurityValidationError
+from dataagent.agents.nl2sql.errors import SchemaContractError, SQLSecurityValidationError
 from dataagent.agents.nl2sql.nodes.base_nl2sql_node import BaseNL2SQLNode
+from dataagent.agents.nl2sql.utils.label_contract import has_blocking_label_schema_issue
 from dataagent.agents.nl2sql.utils.nl2sql_utils import quote_sql_placeholders
 from dataagent.agents.nl2sql.workflow.state import NL2SQLState, Result
 from dataagent.utils.constants import DEFAULT_NL2SQL_REFLECTOR_THRESHOLD
@@ -46,6 +47,13 @@ class ReflectorNode(BaseNL2SQLNode):
             raise SQLSecurityValidationError(detail=detail)
         best = max(safe_results or state["validation_results"], key=lambda result: result.score)
         if safe_results and ((best.score >= self.threshold and not best.need_ref) or state["ref_retries"] <= 0):
+            if state["ref_retries"] <= 0 and has_blocking_label_schema_issue(best.issues):
+                raise SchemaContractError(
+                    detail=(
+                        "Linked schema is missing the enum lookup table required for Chinese labels "
+                        f"(issues={best.issues})."
+                    )
+                )
             state["validation_results"] = safe_results
             state["proceed"] = True
             state["sql"] = best.sql

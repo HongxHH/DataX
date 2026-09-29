@@ -48,6 +48,7 @@ from loguru import logger
 
 from dataagent.common_utils.outbound_tls import httpx_verify
 from dataagent.core.managers.llm_manager.llm_config import LLMConfig
+from dataagent.core.managers.llm_manager.thinking_override import apply_thinking_to_payload
 from dataagent.utils.constants import (
     DEFAULT_COMPRESS_MESSAGE_CNT,
     DEFAULT_COMPRESS_TOKEN_LIMIT,
@@ -2005,6 +2006,8 @@ class LLMClient:
             **self._extra_body,
             **call_extra,
         }
+        # Shell「深度思考」按钮：按轮覆盖 YAML 里的 thinking.type
+        apply_thinking_to_payload(payload)
         if self._tools:
             openai_tools = self._tools_to_openai(self._tools)
             if openai_tools:

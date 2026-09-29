@@ -32,11 +32,18 @@ export function humanizeChatError(raw: string, isAbort = false): string {
     return "子 Agent 正在运行。请停止当前生成，或换一个新的 worker 再问。";
   }
   if (
-    /NL2SQL-SEC-001|Blocked by SQL security|生成的 SQL 未通过安全校验|SQLSecurityValidationError|Only read-only SELECT|sql security rules/i.test(
+    /NL2SQL-SEC-001|Blocked by SQL security|生成的 SQL 未通过安全校验|SQLSecurityValidationError|Only read-only SELECT|sql security rules|SENSITIVE-00[12]/i.test(
       text,
     )
   ) {
-    return "该查询被安全规则拦截，只允许只读 SELECT。请改问后再试。";
+    return "该查询涉及敏感数据或违反安全规则，已拒绝执行。请改问后再试。";
+  }
+  if (
+    /NL2SQL-META-003|SchemaContractError|当前 Schema 不足以正确回答该问题|missing the enum lookup/i.test(
+      text,
+    )
+  ) {
+    return "当前可用的数据表不足以正确回答该问题，请换个问法或联系管理员补全语义目录后再试。";
   }
   return text;
 }

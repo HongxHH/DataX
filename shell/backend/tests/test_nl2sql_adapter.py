@@ -61,3 +61,21 @@ def test_iter_nl2sql_custom_ignores_other_types():
     assert events == []
     assert node == "generator"
     assert draft == "SELECT 1"
+
+
+def test_format_nl2sql_empty_sql_is_not_success():
+    from shell.backend.adapters.nl2sql import format_nl2sql_result
+
+    payload = format_nl2sql_result({"sql": "", "rows_preview": [{"a": 1}], "session_id": "s1"})
+    assert payload["success"] is False
+    assert payload["rows_preview"] is None
+    assert "未生成可执行的 SQL" in payload["message"]
+
+
+def test_format_nl2sql_with_sql_is_success():
+    from shell.backend.adapters.nl2sql import format_nl2sql_result
+
+    payload = format_nl2sql_result({"sql": "SELECT 1", "rows_preview": [{"n": 1}]})
+    assert payload["success"] is True
+    assert payload["sql"] == "SELECT 1"
+    assert "sql_fingerprint" in payload

@@ -11,9 +11,32 @@ from typing import Any
 from dataagent.utils.log import logger
 from dataagent.utils.runtime_paths import SUBAGENT_OUTPUT_DIR_ENV
 
-MAX_PERSIST_ROWS = 10_000  # HAZARD: 上限写死；超大结果静默截断，调用方只靠 persist_truncated 感知。
+# Default cap; override with env DATAAGENT_NL2SQL_MAX_PERSIST_ROWS (>0).
+MAX_PERSIST_ROWS = 10_000
 # 与 landcheck_nl2sql.yaml 的 executor.preview_limit: 50 对齐（不是 constants 里的默认 5）。
-PREVIEW_LIMIT_NOTE = "对话预览约 50 行；落盘 CSV 为查询全量（最多 10000 行）。"
+PREVIEW_LIMIT_NOTE_TMPL = "对话预览约 50 行；落盘 CSV 为查询全量（最多 {cap} 行）。"
+NL2SQL_MAX_PERSIST_ROWS_ENV = "DATAAGENT_NL2SQL_MAX_PERSIST_ROWS"
+
+
+def max_persist_rows() -> int:
+    """Return the persist row cap (env override or default)."""
+    raw = os.getenv(NL2SQL_MAX_PERSIST_ROWS_ENV, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return MAX_PERSIST_ROWS
+
+
+def preview_limit_note(cap: int | None = None) -> str:
+    return PREVIEW_LIMIT_NOTE_TMPL.format(cap=cap if cap is not None else max_persist_rows())
+
+
+# Back-compat for imports that still read PREVIEW_LIMIT_NOTE.
+PREVIEW_LIMIT_NOTE = preview_limit_note()
 
 
 def resolve_persist_workspace(workspace: str | Path | None) -> Path | None:
@@ -81,8 +104,9 @@ def persist_nl2sql_result(
     csv_path = run_dir / "result.csv"
     col_names = [str(c) for c in columns] if isinstance(columns, list) and columns else []
     raw_rows = coerce_result_rows(rows)
-    truncated = len(raw_rows) > MAX_PERSIST_ROWS
-    written_rows = raw_rows[:MAX_PERSIST_ROWS]
+    cap = max_persist_rows()
+    truncated = len(raw_rows) > cap
+    written_rows = raw_rows[:cap]
     if not col_names and written_rows:
         width = len(written_rows[0]) if isinstance(written_rows[0], (list, tuple)) else 1
         col_names = [f"col_{i}" for i in range(width)]
@@ -107,6 +131,7 @@ def persist_nl2sql_result(
         "csv_path": str(csv_path),
         "persist_row_count": len(written_rows),
         "persist_truncated": truncated,
+        "persist_max_rows": cap,
     }
     logger.info(
         "nl2sql persist: sql={} csv={} rows={} truncated={}",
@@ -147,11 +172,14 @@ def persist_summary_line(payload: dict[str, Any]) -> str:
     if not csv_path:
         return ""
     count = payload.get("persist_row_count")
-    extra = "（已截断到上限 10000 行）" if payload.get("persist_truncated") else ""
+    cap = payload.get("persist_max_rows")
+    if not isinstance(cap, int) or cap <= 0:
+        cap = max_persist_rows()
+    extra = f"（已截断到上限 {cap} 行）" if payload.get("persist_truncated") else ""
     row_bit = f"共 {count} 行{extra}" if isinstance(count, int) else "已落盘"
     return (
         f"查询结果已落盘：CSV `{csv_path}`，SQL `{sql_path}`，{row_bit}。"
-        f"{PREVIEW_LIMIT_NOTE}"
+        f"{preview_limit_note(cap)}"
     )
 
 

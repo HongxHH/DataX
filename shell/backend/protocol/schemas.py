@@ -12,6 +12,8 @@ class CreateSessionRequest(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1)
     query: str = Field(min_length=1)
+    # Fast 默认：关思考；前端「深度思考」打开时为 true
+    enable_thinking: bool = False
 
 
 class SwitchProfileRequest(BaseModel):

@@ -5388,8 +5388,8 @@
         "tableNameEn": "ref_enum",
         "sourceType": "mysql",
         "tableNameCh": "枚举释义",
-        "tableDescription": "枚举释义。DataAgent 翻译代码查本表",
-        "llmContext": "枚举释义。翻译 usage_category / floor_area_type 等代码必须 JOIN 本表，并带 enum_group。",
+        "tableDescription": "枚举字典表（代码→中文标签/含义）。翻译 usage_category / floor_area_type 等代码必须 JOIN 本表，并带 enum_group；不要用 CASE 硬编码中文。",
+        "llmContext": "枚举字典表（代码→中文标签/含义）。翻译 usage_category / floor_area_type 等代码必须 JOIN 本表，并带 enum_group；不要用 CASE 硬编码中文。",
         "layer": "DWD",
         "entityType": "PhysicalTable",
         "columnDescriptions": "enum_group(varchar): 枚举分组; enum_code(varchar): 存库代码; enum_label(varchar): 中文含义; description(varchar): 补充说明",
@@ -5628,9 +5628,9 @@
         "qualifiedName": "sql.landcheck_usage_stats@mysql",
         "sqlId": "landcheck_usage_stats",
         "name": "landcheck_usage_stats",
-        "expression": "SELECT r.usage_category, e.enum_label, r.floor_area_type, COUNT(*) AS rooms, ROUND(SUM(r.building_area), 2) AS area FROM room_info r LEFT JOIN ref_enum e ON e.enum_group = 'usage_category' AND e.enum_code = r.usage_category WHERE r.is_deleted = 0 GROUP BY r.usage_category, e.enum_label, r.floor_area_type ORDER BY rooms DESC",
-        "intent": "用途用 usage_category，中文标签 LEFT JOIN ref_enum",
-        "query": "按用途和计容类型统计房间数和建筑面积",
+        "expression": "SELECT r.usage_category, e.enum_label, COUNT(*) AS rooms FROM room_info r LEFT JOIN ref_enum e ON e.enum_group = 'usage_category' AND e.enum_code = r.usage_category WHERE r.is_deleted = 0 GROUP BY r.usage_category, e.enum_label ORDER BY rooms DESC",
+        "intent": "问中文标签时用途用 usage_category，LEFT JOIN ref_enum；未要求中文时不要硬塞 ref_enum",
+        "query": "按用途统计房间数，给出用途代码和中文标签",
         "relatedTables": [
           "room_info",
           "ref_enum"
@@ -10832,7 +10832,7 @@
         "join_type": "LEFT JOIN",
         "expression": "{source}.usage_category = {target}.enum_code AND {target}.enum_group = 'usage_category'",
         "cardinality": "N:1",
-        "intent": "房间用途代码翻译为中文；必须带 enum_group='usage_category'"
+        "intent": "房间用途代码翻译为中文标签；必须带 enum_group='usage_category'"
       }
     },
     {
@@ -11073,6 +11073,26 @@
         "uniqueAttributes": {
           "qualifiedName": "landcheck.survey_report_info@mysql"
         }
+      }
+    },
+    {
+      "typeName": "column_join_relationship",
+      "end1": {
+        "typeName": "data_column",
+        "uniqueAttributes": {
+          "qualifiedName": "landcheck.room_info.usage_category@mysql"
+        }
+      },
+      "end2": {
+        "typeName": "data_column",
+        "uniqueAttributes": {
+          "qualifiedName": "landcheck.ref_enum.enum_code@mysql"
+        }
+      },
+      "attributes": {
+        "join_type": "LEFT_JOIN",
+        "expression": "{source}.usage_category = {target}.enum_code AND {target}.enum_group = 'usage_category'",
+        "intent": "房间用途代码翻译为中文标签；必须带 enum_group='usage_category'"
       }
     }
   ]

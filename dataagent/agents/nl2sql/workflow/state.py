@@ -83,6 +83,7 @@ class NL2SQLState(BaseState):
     sql_path: str
     persist_row_count: int
     persist_truncated: bool
+    persist_max_rows: int
 
     # streaming
     stream_message: str
@@ -121,6 +122,7 @@ def get_default_state(question: str, **override) -> NL2SQLState:
         "sql_path": "",
         "persist_row_count": 0,
         "persist_truncated": False,
+        "persist_max_rows": 0,
         "stream_message": "",
     }
     default_state.update(override)

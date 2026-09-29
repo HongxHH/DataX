@@ -1,0 +1,4 @@
+# Eval run artifacts (SQL dumps, report.json)
+runs/
+# One-off local probes
+_*.py

@@ -39,8 +39,9 @@ class ValidatorNode(BaseNL2SQLNode):
             metadata_res = await self._validate_metadata(state["schema"], state["generation_results"])
         else:
             metadata_res = [{"score": 1, "issues": []}] * len(state["generation_results"])
+        contract_res = self._validate_deterministic_contracts(state)
         state["validation_results"] = self._combine_validation_results(
-            state["generation_results"], semantic_res, syntax_res, metadata_res
+            state["generation_results"], semantic_res, syntax_res, metadata_res, contract_res
         )
         state["generation_results"].clear()
         p = "\n".join([f"Score: {v.score:.2f}, Issues: {v.issues}" for v in state["validation_results"]])
@@ -137,6 +138,20 @@ class ValidatorNode(BaseNL2SQLNode):
         except Exception as e:
             return [str(e)]
 
+    def _validate_deterministic_contracts(self, state: NL2SQLState) -> list[dict[str, Any]]:
+        from dataagent.agents.nl2sql.utils.label_contract import check_enum_label_contract
+        from dataagent.agents.nl2sql.utils.order_contract import check_order_by_contract
+
+        question = str(state.get("question") or "")
+        schema = state.get("schema") if isinstance(state.get("schema"), dict) else {}
+        res: list[dict[str, Any]] = []
+        for gr in state["generation_results"]:
+            sql = str(gr.sql or "")
+            issues = check_enum_label_contract(question=question, schema=schema, sql=sql)
+            issues.extend(check_order_by_contract(question=question, sql=sql))
+            res.append({"score": 0 if issues else 1, "issues": issues})
+        return res
+
     async def _validate_metadata(self, schema: dict, gen_res: list[Result]) -> list[dict[str, Any]]:
         res = []
         valid = flatten_schema(schema)
@@ -155,11 +170,15 @@ class ValidatorNode(BaseNL2SQLNode):
         semantic_res: list[dict[str, Any]],
         syntax_res: list[dict[str, Any]],
         metadata_res: list[dict[str, Any]],
+        contract_res: list[dict[str, Any]] | None = None,
     ) -> list[Result]:
+        contract_res = contract_res or [{"score": 1, "issues": []}] * len(gen_res)
         result = []
-        for gs, sm_res, sn_res, md_res in zip(gen_res, semantic_res, syntax_res, metadata_res, strict=True):
+        for gs, sm_res, sn_res, md_res, ct_res in zip(
+            gen_res, semantic_res, syntax_res, metadata_res, contract_res, strict=True
+        ):
             score, all_issues = 1, []
-            for res in [sm_res, sn_res, md_res]:
+            for res in [sm_res, sn_res, md_res, ct_res]:
                 score *= res["score"]
                 all_issues.extend(res["issues"])
             gs.score, gs.issues = score, all_issues
