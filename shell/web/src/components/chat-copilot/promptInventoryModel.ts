@@ -422,33 +422,27 @@ export function assemblySlots(inventory: PromptInventory, scope: AssemblyScope =
   if (scope === "main" && inventory.parts && inventory.parts.length > 0) {
     slots.push({ kind: "parts", title: "分块" });
   }
-  if (scope === "main" && inventory.history) {
+  // Only surface history when compressed; "完整" duplicates the empty-IR copy.
+  if (scope === "main" && inventory.history && inventory.history.chip.tone === "warn") {
     slots.push({ kind: "history", title: "历史", badge: inventory.history.chip.label });
   }
-  if (inventory.ir) {
+  // Skip empty IR / worker / miss-recall — they only repeat "nothing here".
+  if (inventory.ir && inventory.ir.count > 0) {
     slots.push({
       kind: "ir",
       title: "IR",
-      badge: inventory.ir.count > 0 ? `×${inventory.ir.count}` : undefined,
+      badge: `×${inventory.ir.count}`,
     });
   }
-  if (scope === "main") {
+  if (scope === "main" && inventory.workers.length > 0) {
     slots.push({
       kind: "worker",
       title: "Worker",
-      badge: inventory.workers.length > 0 ? String(inventory.workers.length) : undefined,
+      badge: String(inventory.workers.length),
     });
   }
-  if (
-    inventory.flags &&
-    (scope === "main" ||
-      inventory.flags.skillCount > 0 ||
-      inventory.flags.hasPlan ||
-      inventory.flags.hasMemory)
-  ) {
-    slots.push({ kind: "flags", title: "其它槽位" });
-  }
-  if (inventory.recall) {
+  // Flags (技能/计划/记忆) hidden for now — noisy when usually "技能 0 · 无计划".
+  if (inventory.recall?.status === "hit") {
     slots.push({ kind: "recall", title: "召回" });
   }
   if (scope === "main" && inventory.rewrittenQuery) {
@@ -470,6 +464,8 @@ function packedRecall(
   inferred: PackedRecall | null,
 ): PackedRecall | null {
   if (!packed?.recall) return inferred;
+  // Packed only carries a boolean mark; prefer prep-log label (命中 N 段 · preview).
+  if (inferred && inferred.status === packed.recall) return inferred;
   if (packed.recall === "hit") return { status: "hit", label: "已装入跨会话记忆。" };
   if (packed.recall === "empty") return { status: "empty", label: "未命中跨会话记忆。" };
   return { status: "disabled", label: "跨会话记忆已跳过。" };

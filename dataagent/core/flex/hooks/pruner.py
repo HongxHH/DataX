@@ -41,9 +41,8 @@ def pruner(state: FlexState, runtime: Runtime) -> FlexState:
 
     判断流程：
     1. 原始历史未超限时不改写 state
-    2. message 超限时跳过 IR，直接 Fold 原始历史
-    3. 仅 token 超限时构建一次 IR candidate；到达 0.6T 则接受
-    4. candidate 未到 0.6T 时丢弃 candidate，并 Fold 原始历史
+    2. message 或 token 超限时先构建 IR candidate；压到 0.6T 则接受
+    3. IR 不可用或未到水位时，Fold 原始历史
 
     注意：``messages`` 状态的 reducer 是 ``add_messages``（按 id 做 merge），
     直接替换 ``state["messages"]`` 不会删除旧消息。
@@ -60,17 +59,18 @@ def pruner(state: FlexState, runtime: Runtime) -> FlexState:
     if not pressure.message_overflow and not pressure.token_overflow:
         return state
 
-    if not pressure.message_overflow:
-        context = get_context_for_flex_state(state, runtime, swallow_errors=True)
-        if context is not None:
-            recent_turns = getattr(runtime.env, "ir_recent_turns", None)
-            if recent_turns is None:
-                recent_turns = DEFAULT_IR_RECENT_TURNS
-            candidate = build_ir_candidate(messages, context, ir_recent_turns=recent_turns)
-            target_tokens = int(strategy.token_limit * strategy.low_water_ratio)
-            if count_tokens_approximately(candidate) <= target_tokens:
-                state["messages"] = cast(list[AnyMessage], [RemoveMessage(id="__remove_all__"), *candidate])
-                return state
+    # Prefer structured IR for either overflow — long chats need structure most when
+    # message count trips the limit, not only when tokens do.
+    context = get_context_for_flex_state(state, runtime, swallow_errors=True)
+    if context is not None:
+        recent_turns = getattr(runtime.env, "ir_recent_turns", None)
+        if recent_turns is None:
+            recent_turns = DEFAULT_IR_RECENT_TURNS
+        candidate = build_ir_candidate(messages, context, ir_recent_turns=recent_turns)
+        target_tokens = int(strategy.token_limit * strategy.low_water_ratio)
+        if count_tokens_approximately(candidate) <= target_tokens:
+            state["messages"] = cast(list[AnyMessage], [RemoveMessage(id="__remove_all__"), *candidate])
+            return state
 
     try:
         compressed = compress_messages(messages, strategy, llm=runtime.llm("planner"))

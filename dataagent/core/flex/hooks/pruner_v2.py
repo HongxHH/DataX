@@ -10,12 +10,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""Flex 内置 pruner hook（planner 节点 pre-hook）。
+"""Legacy character-threshold pruner (planner pre-hook).
 
-从 ``core.state.pruner`` 移植：字符阈值 + 固定尾部窗口 + LLM 摘要。
-适配本仓 Runtime / FlexState / ``add_messages`` reducer。
+Deprecated: prefer the short-name hook ``pruner``
+(``dataagent.core.flex.hooks.pruner.pruner``), which uses IR + token Fold.
 
-可选 YAML（任选其一 dict）::
+This module remains for suite YAML that still pin the dotted path. New configs
+should use ``name: pruner``.
+
+Optional YAML::
 
     CONTEXT:
       pruner:
@@ -47,10 +50,18 @@ COMPRESSION_THRESHOLD = 262144
 PRUNER_DIR_NAME = "pruner"
 PRUNER_SNAPSHOT_FILE_NAME = "snapshots.json"
 _BEIJING_TZ = timezone(timedelta(hours=8))
+_DEPRECATION_LOGGED = False
 
 
 def pruner(state: FlexState, runtime: Runtime) -> FlexState:
     """Planner 节点 pre-hook：按字符阈值压缩中间历史消息。"""
+    global _DEPRECATION_LOGGED
+    if not _DEPRECATION_LOGGED:
+        _DEPRECATION_LOGGED = True
+        logger.warning(
+            "[pruner_v2] deprecated; prefer HOOKS short name `pruner` "
+            "(IR/token path in dataagent.core.flex.hooks.pruner)"
+        )
     config = _pruner_config(runtime)
     if not bool(config.get("enabled", True)):
         return state

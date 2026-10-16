@@ -13,7 +13,7 @@ import { SessionIdChip, SessionList, SESSIONS_COLLAPSED_KEY } from "../../compon
 import { IconButton, PanelRightIcon, SidebarIcon, TraceIcon } from "../../components/shared/IconButton";
 import { usePersistedToggle } from "../../components/shared/usePersistedToggle";
 import { ToolTimeline } from "../../components/shared/ToolTimeline";
-import { PromptInventoryControl } from "../../components/chat-copilot/PromptInventoryControl";
+import { ContextUsageRing } from "../../components/chat-copilot/ContextUsageRing";
 import { isMainAgentUsage, parseContextUsage } from "../../components/chat-copilot/contextUsageModel";
 import { isMainAgentInventory, parsePromptInventory, upsertSubInventory } from "../../components/chat-copilot/promptInventoryModel";
 import { TrajectoryDrawer } from "../../components/chat-copilot/TrajectoryDrawer";
@@ -699,15 +699,10 @@ export default function ChatCopilot({
             <h2>{activeTitle}</h2>
             <div className="panel-header-meta">
               {activeId ? <SessionIdChip sessionId={activeId} /> : null}
-              <PromptInventoryControl
+              <ContextUsageRing
                 usage={contextUsage}
-                packed={promptInventory}
-                messages={messages}
-                activeTurn={activeTurn}
-                liveDelegations={collectVisibleDelegations(messages, activeTurn)}
-                livePrepLog={planPrepLog}
-                livePlanTools={planTools}
-                live={loading && runningId === activeId}
+                active={trajectoryOpen}
+                onClick={() => setTrajectoryOpen((open) => !open)}
               />
               {loading && runningId === activeId ? (
                 <>
@@ -724,7 +719,15 @@ export default function ChatCopilot({
             groups={trajectoryGroups}
             liveSpans={activeTurn?.otel_spans ?? messages.at(-1)?.otel_spans ?? []}
             delegations={collectVisibleDelegations(messages, activeTurn)}
+            messages={messages}
+            liveUsage={contextUsage}
+            livePacked={promptInventory}
+            livePlanTools={planTools}
+            livePrepLog={planPrepLog}
+            liveRewrittenQuery={activeTurn?.rewritten_query ?? null}
+            live={loading && runningId === activeId}
             loading={loading && runningId === activeId}
+            sessionId={activeId}
             onClose={() => setTrajectoryOpen(false)}
           />
           <CopilotMessageList

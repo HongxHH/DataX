@@ -1,4 +1,3 @@
-import { formatTokenCount } from "./contextUsageModel";
 import {
   assemblySlots,
   IR_EMPTY_DETAIL,
@@ -6,6 +5,9 @@ import {
   type AssemblySlot,
   type PromptInventory,
 } from "./promptInventoryModel";
+import { PromptPartsBar } from "./PromptPartsBar";
+import { splitRecallCheckpoint } from "./prepLogModel";
+import { firstPackedSessionId } from "./memoryDeskModel";
 
 interface AssemblyPanelProps {
   inventory: PromptInventory;
@@ -13,6 +15,10 @@ interface AssemblyPanelProps {
   heading?: string;
   note?: string;
   compact?: boolean;
+  /** Jump to packed Cross-Session Memories in the prompt list (trajectory). */
+  onRevealRecallFull?: () => void;
+  /** Open the memory desk, optionally focused on a snapshot. */
+  onOpenMemoryDesk?: (sessionId?: string) => void;
 }
 
 export function AssemblyPanel({
@@ -21,6 +27,8 @@ export function AssemblyPanel({
   heading,
   note,
   compact = false,
+  onRevealRecallFull,
+  onOpenMemoryDesk,
 }: AssemblyPanelProps) {
   const slots = assemblySlots(inventory, scope);
   if (slots.length === 0) return null;
@@ -33,49 +41,61 @@ export function AssemblyPanel({
         </header>
       ) : null}
       {slots.map((slot) => (
-        <AssemblySlotView key={slot.kind} slot={slot} inventory={inventory} />
+        <AssemblySlotView
+          key={slot.kind}
+          slot={slot}
+          inventory={inventory}
+          onRevealRecallFull={onRevealRecallFull}
+          onOpenMemoryDesk={onOpenMemoryDesk}
+        />
       ))}
     </div>
   );
 }
 
-function AssemblySlotView({ slot, inventory }: { slot: AssemblySlot; inventory: PromptInventory }) {
+function AssemblySlotView({
+  slot,
+  inventory,
+  onRevealRecallFull,
+  onOpenMemoryDesk,
+}: {
+  slot: AssemblySlot;
+  inventory: PromptInventory;
+  onRevealRecallFull?: () => void;
+  onOpenMemoryDesk?: (sessionId?: string) => void;
+}) {
+  const showLabel = slot.kind !== "parts";
   return (
     <section className="prompt-inventory-section">
-      <div className="prompt-inventory-label">
-        {slot.title}
-        {slot.badge ? <span className="assembly-slot-badge">{slot.badge}</span> : null}
-      </div>
-      <AssemblySlotBody slot={slot} inventory={inventory} />
+      {showLabel ? (
+        <div className="prompt-inventory-label">
+          {slot.title}
+          {slot.badge ? <span className="assembly-slot-badge">{slot.badge}</span> : null}
+        </div>
+      ) : null}
+      <AssemblySlotBody
+        slot={slot}
+        inventory={inventory}
+        onRevealRecallFull={onRevealRecallFull}
+        onOpenMemoryDesk={onOpenMemoryDesk}
+      />
     </section>
   );
 }
 
-function AssemblySlotBody({ slot, inventory }: { slot: AssemblySlot; inventory: PromptInventory }) {
+function AssemblySlotBody({
+  slot,
+  inventory,
+  onRevealRecallFull,
+  onOpenMemoryDesk,
+}: {
+  slot: AssemblySlot;
+  inventory: PromptInventory;
+  onRevealRecallFull?: () => void;
+  onOpenMemoryDesk?: (sessionId?: string) => void;
+}) {
   if (slot.kind === "parts" && inventory.parts) {
-    return (
-      <>
-        <div className="prompt-inventory-part-bar" aria-hidden="true">
-          {inventory.parts
-            .filter((part) => part.percent > 0)
-            .map((part) => (
-              <span
-                key={part.key}
-                className={`prompt-inventory-part is-${part.key}`}
-                style={{ width: `${part.percent}%` }}
-              />
-            ))}
-        </div>
-        <ul className="prompt-inventory-legend">
-          {inventory.parts.map((part) => (
-            <li key={part.key}>
-              <span className={`prompt-inventory-swatch is-${part.key}`} />
-              {part.label} {formatTokenCount(part.tokens)}
-            </li>
-          ))}
-        </ul>
-      </>
-    );
+    return <PromptPartsBar parts={inventory.parts} />;
   }
   if (slot.kind === "history" && inventory.history) {
     return (
@@ -155,7 +175,50 @@ function AssemblySlotBody({ slot, inventory }: { slot: AssemblySlot; inventory: 
     );
   }
   if (slot.kind === "recall" && inventory.recall) {
-    return <p className="prompt-inventory-copy">{inventory.recall.label}</p>;
+    const split = splitRecallCheckpoint(inventory.recall.label);
+    const reveal = onRevealRecallFull ? (
+      <button
+        type="button"
+        className="prompt-inventory-recall-more"
+        title="在下方提示词中查看装入的完整 Cross-Session Memories"
+        aria-label="查看召回全文"
+        onClick={onRevealRecallFull}
+      >
+        ···
+      </button>
+    ) : null;
+    const jumpId = firstPackedSessionId(split?.preview ?? "");
+    const desk = onOpenMemoryDesk ? (
+      <button
+        type="button"
+        className="prompt-inventory-recall-link"
+        title="在召回台对照本轮装入的 snapshot"
+        onClick={() => onOpenMemoryDesk(jumpId)}
+      >
+        召回台
+      </button>
+    ) : null;
+    const headline = split?.headline || inventory.recall.label;
+    if (onRevealRecallFull || onOpenMemoryDesk || !split?.preview) {
+      return (
+        <div className="prompt-inventory-recall">
+          <p className="prompt-inventory-copy">
+            {onRevealRecallFull || onOpenMemoryDesk ? headline : inventory.recall.label}
+            {reveal}
+            {desk}
+          </p>
+        </div>
+      );
+    }
+    return (
+      <div className="prompt-inventory-recall">
+        <p className="prompt-inventory-copy">{split.headline}</p>
+        <details className="prompt-inventory-recall-preview">
+          <summary>召回预览</summary>
+          <pre>{split.preview}</pre>
+        </details>
+      </div>
+    );
   }
   if (slot.kind === "rewrite" && inventory.rewrittenQuery) {
     return <p className="prompt-inventory-copy">{inventory.rewrittenQuery}</p>;

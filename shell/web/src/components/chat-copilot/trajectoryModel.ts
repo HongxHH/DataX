@@ -3,11 +3,20 @@ import type { DelegationBlock } from "../../types";
 import { displayAgentLabel, isSubAgentTool } from "./delegationState";
 import { pipelineStepsFromDelegation } from "./pipelineSteps";
 
+export interface PromptMessage {
+  role: string;
+  content: string;
+  truncated?: boolean;
+}
+
 export interface TrajectoryEvent {
   type: string;
   timestamp?: number;
   model?: string;
   prompt?: string;
+  prompt_messages?: PromptMessage[];
+  prompt_truncated?: boolean;
+  event_index?: number;
   content?: string;
   tool_name?: string;
   tool_call_id?: string;
@@ -19,6 +28,7 @@ export interface TrajectoryEvent {
 
 export interface TrajectoryGroup {
   file: string;
+  chunk_index?: number;
   role: string;
   sub_id?: number | null;
   run_id?: number | null;
@@ -38,6 +48,11 @@ export interface TrajectorySpan {
   endTs: number | null;
   failed: boolean;
   prompt?: string;
+  promptMessages?: PromptMessage[];
+  promptTruncated?: boolean;
+  promptFile?: string;
+  promptChunkIndex?: number;
+  promptEventIndex?: number;
   arguments?: string;
   result?: string;
   content?: string;
@@ -63,6 +78,50 @@ export function sourceLabel(group: TrajectoryGroup): string {
     return `子 Agent #${group.sub_id}${run}`;
   }
   return "主 Agent";
+}
+
+export type PromptRoleTone = "system" | "user" | "history" | "other";
+
+export function promptMessagesFromSpan(span: TrajectorySpan): PromptMessage[] {
+  if (span.promptMessages && span.promptMessages.length > 0) {
+    return span.promptMessages;
+  }
+  const fallback = span.prompt?.trim();
+  if (!fallback) return [];
+  return [{ role: "prompt", content: fallback }];
+}
+
+export function defaultOpenPromptIndex(messages: PromptMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].content.includes("<user_query>")) return i;
+  }
+  return -1;
+}
+
+/** Index of the prompt message that carries packed cross-session recall text. */
+export function crossSessionMemoriesPromptIndex(messages: PromptMessage[]): number {
+  const mark = "**Cross-Session Memories:**";
+  for (let i = 0; i < messages.length; i += 1) {
+    if (messages[i].content.includes(mark)) return i;
+  }
+  return -1;
+}
+
+export function promptRoleTone(role: string): PromptRoleTone {
+  const key = role.toLowerCase();
+  if (key === "system") return "system";
+  if (key === "user" || key === "human") return "user";
+  if (key === "assistant") return "history";
+  // tool residual lands in context_usage.parts.other — keep tone aligned
+  if (key === "tool") return "other";
+  return "other";
+}
+
+export function formatPromptCopy(messages: PromptMessage[]): string {
+  return messages
+    .map((item) => `### ${item.role}\n${item.content}`)
+    .join("\n\n")
+    .trim();
 }
 
 function groupSubId(group: TrajectoryGroup): number | undefined {
@@ -117,6 +176,11 @@ export function spansFromGroups(groups: TrajectoryGroup[]): TrajectorySpan[] {
             endTs: null,
             failed: false,
             prompt: event.prompt,
+            promptMessages: event.prompt_messages,
+            promptTruncated: event.prompt_truncated,
+            promptFile: group.file,
+            promptChunkIndex: group.chunk_index ?? 0,
+            promptEventIndex: event.event_index ?? eventIndex,
           },
           group,
           groupIndex,

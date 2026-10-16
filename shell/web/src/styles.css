@@ -711,6 +711,59 @@ body {
   min-width: 0;
 }
 
+.context-usage-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.context-usage-ring.is-clickable {
+  cursor: pointer;
+}
+
+.context-usage-ring.is-clickable:hover,
+.context-usage-ring.is-active {
+  background: var(--bg-elevated);
+}
+
+.context-usage-ring-svg {
+  display: block;
+}
+
+.context-usage-ring-track {
+  stroke: var(--border);
+}
+
+.context-usage-ring-fill {
+  stroke: var(--accent);
+}
+
+.context-usage-ring.is-high .context-usage-ring-fill,
+.context-usage-ring.is-compressed .context-usage-ring-fill {
+  stroke: var(--warning);
+}
+
+.context-usage-ring.is-high.is-compressed .context-usage-ring-fill {
+  stroke: var(--danger);
+}
+
+.context-usage-ring-pct {
+  position: absolute;
+  font-size: 0.52rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+}
+
 .context-usage-meter {
   display: inline-flex;
   align-items: center;

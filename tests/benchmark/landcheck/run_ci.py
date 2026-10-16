@@ -45,6 +45,7 @@ UNIT_TARGETS = [
     "shell/backend/tests/test_sql_security_copy.py",
     "shell/backend/tests/test_nl2sql_adapter.py",
     "shell/backend/tests/test_chat_errors.py",
+    "tests/benchmark/resume_metrics/test_resume_metrics.py",
 ]
 
 

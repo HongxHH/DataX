@@ -10,29 +10,22 @@
 
 ## 界面
 
-**工作台** · `docs/images/workbench.png`
+**工作台** ·
 
 ![工作台](docs/images/workbench.png)
 
-一次问数结束后的整窗：会话、对话、委派 DAG、右侧 SQL / 表。
 
-**委派** · `docs/images/delegation.png`
+
+**委派** · 
 
 ![委派](docs/images/delegation.png)
 
-主 Agent 拆成 NL2SQL → 画图（或报告）的过程，DAG 和产物栏都要能看见。
 
-**上下文** · `docs/images/context.png`
+
+**轨迹和上下文** · 
 
 ![上下文](docs/images/context.png)
 
-同一会话追问后，打开上下文占用 / Prompt 清单，能看出大结果没有整段进 prompt。
-
-**轨迹** · `docs/images/trajectory.png`
-
-![轨迹](docs/images/trajectory.png)
-
-打开轨迹面板，能看到本轮节点阶段或 span。
 
 ## 一次提问会走什么
 

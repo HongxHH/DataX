@@ -10,9 +10,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""Memory indexer: 将 session 记忆追加到 MEMORY.md。
+"""Memory indexer: 将 session 记忆写入 MEMORY.md。
 
-在 portraiter 之后调用，将当前 session 的 snapshot 信息增量写入 MEMORY.md。
+在 portraiter 之后调用，将当前 session 的 snapshot 信息写入 MEMORY.md。
+同一 session_id 再次结束时替换原章节，避免索引腐烂。
 """
 
 from __future__ import annotations
@@ -26,6 +27,12 @@ from typing import Any
 from loguru import logger
 
 from dataagent.utils.runtime_paths import resolve_flex_session_memory_dir, resolve_user_root
+
+_SNAPSHOT_LIST_FIELDS = (
+    ("goals", "Goals"),
+    ("decisions", "Decisions"),
+    ("important_findings", "Findings"),
+)
 
 
 def _get_memory_md_path(user_id: str) -> Path:
@@ -72,24 +79,52 @@ def _load_profile(user_id: str) -> dict[str, Any]:
         return {}
 
 
+def _format_list_field(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    items = [str(item).strip() for item in value if str(item).strip()]
+    return "; ".join(items)
+
+
 def _format_session_entry(session_id: str, snapshot: dict[str, Any]) -> str:
     """将一个 session 的 snapshot 格式化为 MEMORY.md 的一个章节。"""
-    summary = snapshot.get("session_summary", "No summary")
-
+    summary = str(snapshot.get("session_summary") or "No summary").strip() or "No summary"
     lines = [
         f"### {session_id}",
         f"- **Summary**: {summary}",
     ]
-
+    for key, label in _SNAPSHOT_LIST_FIELDS:
+        joined = _format_list_field(snapshot.get(key))
+        if joined:
+            lines.append(f"- **{label}**: {joined}")
     return "\n".join(lines)
 
 
+def _replace_session_section(existing_content: str, session_id: str, new_entry: str) -> str | None:
+    """Replace an existing ``### session_id`` section. Return None if missing."""
+    pattern = rf"(?ms)^###\s+{re.escape(session_id)}\s*\n.*?(?=^###\s+|\Z)"
+    if not re.search(pattern, existing_content):
+        return None
+    replacement = new_entry.rstrip() + "\n\n"
+    return re.sub(pattern, replacement, existing_content, count=1)
+
+
+def _insert_session_section(existing_content: str, user_id: str, new_entry: str) -> str:
+    """Insert a new session section into MEMORY.md content."""
+    if "# Session Summaries" in existing_content:
+        pattern = r"(# Session Summaries\n\n)"
+        replacement = r"\1" + new_entry + "\n\n"
+        return re.sub(pattern, replacement, existing_content, count=1)
+    if "# User Profile" in existing_content:
+        return existing_content.rstrip() + "\n\n## Session Summaries\n\n" + new_entry + "\n"
+    return f"# Memory for {user_id}\n\n## Session Summaries\n\n{new_entry}\n"
+
+
 def _update_memory_md(user_id: str, session_id: str, snapshot: dict[str, Any]) -> None:
-    """增量更新 MEMORY.md：追加当前 session 的章节。"""
+    """写入或替换当前 session 在 MEMORY.md 中的章节。"""
     memory_md_path = _get_memory_md_path(user_id)
     memory_md_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 读取现有内容
     existing_content = ""
     if memory_md_path.exists():
         try:
@@ -97,35 +132,19 @@ def _update_memory_md(user_id: str, session_id: str, snapshot: dict[str, Any]) -
         except OSError:
             existing_content = ""
 
-    # 检查是否已存在该 session 的章节
-    if re.search(rf"^###\s+{re.escape(session_id)}$", existing_content, re.MULTILINE):
-        # 已存在，更新该章节
-        logger.debug(f"[memory_indexer] session {session_id} already indexed, skipping")
-        return
-
-    # 构建新章节
     new_entry = _format_session_entry(session_id, snapshot)
-
-    # 追加到 Session Summaries 部分之后
-    if "# Session Summaries" in existing_content:
-        # 找到第一个 ### 章节之前插入
-        pattern = r"(# Session Summaries\n\n)"
-        replacement = r"\1" + new_entry + "\n\n"
-        new_content = re.sub(pattern, replacement, existing_content, count=1)
+    replaced = _replace_session_section(existing_content, session_id, new_entry) if existing_content else None
+    if replaced is not None:
+        new_content = replaced
+        action = "updated"
     else:
-        # 没有 Session Summaries 部分，在 User Profile 之后添加
-        if "# User Profile" in existing_content:
-            pattern = r"(# User Profile.*?(?=\n##|\n#|$))"
-            new_content = existing_content + "\n\n## Session Summaries\n\n" + new_entry + "\n"
-        else:
-            # 全新文件
-            new_content = f"# Memory for {user_id}\n\n## Session Summaries\n\n{new_entry}\n"
+        new_content = _insert_session_section(existing_content, user_id, new_entry)
+        action = "indexed"
 
-    # 原子写入
     tmp = memory_md_path.with_suffix(".md.tmp")
     tmp.write_text(new_content, encoding="utf-8")
     tmp.replace(memory_md_path)
-    logger.debug(f"[memory_indexer] indexed session {session_id}")
+    logger.debug(f"[memory_indexer] {action} session {session_id}")
 
 
 def update_memory_index(

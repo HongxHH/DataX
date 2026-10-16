@@ -1,9 +1,14 @@
 import {
   buildTrajectoryForest,
+  crossSessionMemoriesPromptIndex,
+  defaultOpenPromptIndex,
   findTrajectoryBranch,
+  formatPromptCopy,
   formatTokenTotal,
   mainAgentLiveBranch,
   mainLlmRole,
+  promptMessagesFromSpan,
+  promptRoleTone,
   spansFromGroups,
   spansFromLive,
   spanModelDetail,
@@ -355,5 +360,69 @@ assert(
   "model detail kept",
 );
 assert(spanModelDetail("qwen-plus") == null, "no detail when not role:model");
+
+const promptGroups: TrajectoryGroup[] = [
+  {
+    file: "trajectory.json",
+    role: "main",
+    events: [
+      {
+        type: "llm_start",
+        model: "qwen-plus",
+        timestamp: 1,
+        event_index: 0,
+        prompt_truncated: true,
+        prompt_messages: [
+          { role: "system", content: "You are a DataAgent.", truncated: true },
+          { role: "assistant", content: "先前结论" },
+          { role: "user", content: "查房间" },
+        ],
+      },
+      { type: "llm_end", timestamp: 2, content: "ok" },
+    ],
+  },
+];
+const promptSpan = spansFromGroups(promptGroups)[0];
+assert(promptSpan.promptMessages?.length === 3, "span keeps prompt messages");
+assert(promptSpan.promptMessages?.[2].content === "查房间", "last user survives structured prompt");
+assert(promptSpan.promptTruncated === true, "span keeps truncated flag");
+assert(promptSpan.promptFile === "trajectory.json", "span keeps prompt file");
+assert(promptSpan.promptChunkIndex === 0, "span keeps chunk index");
+assert(promptSpan.promptEventIndex === 0, "span keeps event index");
+assert(defaultOpenPromptIndex(promptSpan.promptMessages ?? []) === -1, "no user_query stays collapsed");
+assert(
+  defaultOpenPromptIndex([
+    { role: "system", content: "role" },
+    { role: "user", content: "<user_query>\n查房间\n</user_query>" },
+    { role: "user", content: "work plan" },
+  ]) === 1,
+  "opens the user_query message",
+);
+assert(
+  crossSessionMemoriesPromptIndex([
+    { role: "system", content: "Role only" },
+    { role: "system", content: "**Session Snapshot:**\n{}\n\n**Cross-Session Memories:**\n### abc\nsummary" },
+    { role: "user", content: "<user_query>x</user_query>" },
+  ]) === 1,
+  "finds Cross-Session Memories block",
+);
+assert(crossSessionMemoriesPromptIndex([{ role: "system", content: "no memories" }]) === -1, "miss stays -1");
+assert(promptRoleTone("system") === "system", "system tone");
+assert(promptRoleTone("assistant") === "history", "assistant maps to history");
+assert(promptRoleTone("tool") === "other", "tool maps to other residual");
+assert(promptRoleTone("human") === "user", "human maps to user");
+assert(formatPromptCopy(promptSpan.promptMessages ?? []).includes("查房间"), "copy includes last user");
+const fallbackPrompt = promptMessagesFromSpan({
+  id: "fallback",
+  kind: "llm",
+  label: "qwen",
+  source: "主 Agent",
+  startTs: 1,
+  endTs: 2,
+  failed: false,
+  prompt: "raw dump",
+});
+assert(fallbackPrompt.length === 1 && fallbackPrompt[0].role === "prompt", "string prompt is one block");
+assert(fallbackPrompt[0].content === "raw dump", "string prompt body kept");
 
 console.log("trajectoryModel.test.ts ok");

@@ -250,11 +250,16 @@ class Planner(BaseNode):
     ) -> Any:
         workspace = runtime.workspace_dir
 
+        # Snapshot/profile stay behind enable_portrait; cross-session recall injects
+        # whenever the pre-hook filled state["cross_session_memory"].
         extra: dict[str, Any] = {}
-        if state.get("enable_portrait"):
-            memory_str = _build_memory_str(state, runtime=runtime)
-            if memory_str:
-                extra["memory"] = memory_str
+        memory_str = _build_memory_str(
+            state,
+            runtime=runtime,
+            include_portrait=bool(state.get("enable_portrait")),
+        )
+        if memory_str:
+            extra["memory"] = memory_str
 
         messages_to_process = prepare_flex_planner_prompt(
             context=context,
@@ -512,37 +517,44 @@ def _dump_context_prompt_if_enabled(messages_to_process: Any, state: FlexState, 
         logger.warning(f"Failed to dump context prompt: {e}")
 
 
-def _build_memory_str(state: FlexState, *, runtime: Any = None) -> str:
-    """读取 snapshot + profile + cross_session_memory，拼接为注入 prompt 的 memory 字符串。"""
+def _build_memory_str(
+    state: FlexState,
+    *,
+    runtime: Any = None,
+    include_portrait: bool = False,
+) -> str:
+    """拼接注入 prompt 的 memory 字符串。
+
+    - ``include_portrait``：写入本会话 snapshot / 用户 profile（依赖 portraiter）。
+    - ``cross_session_memory``：由 cross_session_recall pre-hook 填充，与画像开关无关。
+    """
+    parts: list[str] = []
     user_id = str(state.get("user_id") or "").strip()
     session_id = str(state.get("session_id") or "").strip()
-    if not user_id or not session_id:
-        return ""
-    try:
-        from dataagent.core.flex.hooks.history_writer import resolve_history_persistence_context
-        from dataagent.core.flex.hooks.portraiter import _load_profile, _load_snapshot
+    if include_portrait and user_id and session_id:
+        try:
+            from dataagent.core.flex.hooks.history_writer import resolve_history_persistence_context
+            from dataagent.core.flex.hooks.portraiter import _load_profile, _load_snapshot
 
-        workspace, config = resolve_history_persistence_context(state, runtime)
-        snapshot = _load_snapshot(
-            user_id,
-            session_id,
-            workspace=workspace,
-            config=config,
-        )
-        profile = _load_profile(user_id)
-        parts: list[str] = []
-        if any(v for v in snapshot.values()):
-            snap_j = json.dumps(snapshot, ensure_ascii=False, indent=2)
-            parts.append("**Session Snapshot:**\n```json\n" + snap_j + "\n```")
-        if any(v for v in profile.values()):
-            prof_j = json.dumps(profile, ensure_ascii=False, indent=2)
-            parts.append("**User Profile:**\n```json\n" + prof_j + "\n```")
+            workspace, config = resolve_history_persistence_context(state, runtime)
+            snapshot = _load_snapshot(
+                user_id,
+                session_id,
+                workspace=workspace,
+                config=config,
+            )
+            profile = _load_profile(user_id)
+            if any(v for v in snapshot.values()):
+                snap_j = json.dumps(snapshot, ensure_ascii=False, indent=2)
+                parts.append("**Session Snapshot:**\n```json\n" + snap_j + "\n```")
+            if any(v for v in profile.values()):
+                prof_j = json.dumps(profile, ensure_ascii=False, indent=2)
+                parts.append("**User Profile:**\n```json\n" + prof_j + "\n```")
+        except Exception:
+            pass
 
-        # Cross-session memories
-        cross_session_memory = str(state.get("cross_session_memory") or "").strip()
-        if cross_session_memory:
-            parts.append("**Cross-Session Memories:**\n" + cross_session_memory)
+    cross_session_memory = str(state.get("cross_session_memory") or "").strip()
+    if cross_session_memory:
+        parts.append("**Cross-Session Memories:**\n" + cross_session_memory)
 
-        return "\n\n".join(parts)
-    except Exception:
-        return ""
+    return "\n\n".join(parts)

@@ -210,7 +210,7 @@ const packedInventory = buildPromptInventory({
   },
   packed: parsedPacked,
   delegations: messages[1].delegations ?? [],
-  prepLog: ["跨会话记忆：未命中"],
+  prepLog: ["跨会话记忆：命中 2 段 · 西湖项目房间数摘要"],
 });
 assert(packedInventory.source === "packed", "prefer packed");
 assert(packedInventory.workers[0].sub_id === 11, "packed workers ignore dag");
@@ -333,13 +333,42 @@ assert(
   mergePackedWorkers([{ sub_id: 9, artifact_count: 3, has_error: false }], [])[0].artifacts[0] === "3 个产物",
   "packed count remains when no delegation overlay",
 );
-assert(packedInventory.recall?.label === "已装入跨会话记忆。", "packed recall without excerpt");
+assert(packedInventory.recall?.label.includes("命中 2 段") === true, "packed recall keeps prep preview");
+assert(packedInventory.recall?.label.includes("西湖") === true, "packed recall keeps excerpt");
 assert(packedInventory.ir?.count === 1, "packed ir count");
 assert(packedInventory.flags?.skillCount === 2 && packedInventory.flags.hasPlan === true, "packed flags");
 assert(
   assemblySlots(packedInventory, "main").map((slot) => slot.kind).join() ===
-  "history,ir,worker,flags,recall",
-  "main slots follow packed inventory",
+  "history,ir,worker,recall",
+  "main slots skip flags; history only when compressed",
+);
+assert(
+  assemblySlots(
+    buildPromptInventory({
+      usage: { used_input_tokens: 10, history: "restore" },
+      packed: parsedPacked,
+      delegations: [],
+      prepLog: [],
+    }),
+    "main",
+  )
+    .map((slot) => slot.kind)
+    .includes("history") === false,
+  "restore history is not its own slot",
+);
+assert(
+  assemblySlots(
+    buildPromptInventory({
+      usage: { used_input_tokens: 10, history: "restore" },
+      packed: parsePromptInventory({ ir_summary_count: 0, workers: [], recall: "empty" }),
+      delegations: [],
+      prepLog: ["跨会话记忆：未命中"],
+    }),
+    "main",
+  )
+    .map((slot) => slot.kind)
+    .join() === "",
+  "empty ir/worker/miss-recall omit slots",
 );
 assert(shouldShowAssembly(packedInventory, "main") === true, "packed main panel shows");
 

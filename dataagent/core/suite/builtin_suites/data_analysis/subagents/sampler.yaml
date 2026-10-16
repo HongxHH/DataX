@@ -32,7 +32,7 @@ HOOKS:
   nodes:
     planner:
       pre:
-        - dataagent.core.flex.hooks.pruner_v2.pruner
+        - name: pruner
     executor:
       pre:
       post:

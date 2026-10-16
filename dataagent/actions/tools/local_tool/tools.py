@@ -202,7 +202,10 @@ def _flex_state_artifact_note(state: dict[str, Any]) -> str:
         bits.append(f"SQL 已落盘：{sql_path}")
     persist_count = state.get("persist_row_count")
     if isinstance(persist_count, int) and csv_path:
-        extra = "（已截断到上限 10000 行）" if state.get("persist_truncated") else ""
+        cap = state.get("persist_max_rows")
+        if not isinstance(cap, int) or cap <= 0:
+            cap = 10_000
+        extra = f"（已截断到上限 {cap} 行）" if state.get("persist_truncated") else ""
         bits.append(f"落盘 {persist_count} 行{extra}；预览约 50 行，二者分开。")
     recall_path = str(state.get("recall_path") or "").strip()
     if recall_path:
@@ -953,6 +956,8 @@ def _resolve_and_authorize(
 
 def _build_shell_env() -> dict[str, str]:
     """Build the subprocess env, injecting USER_SQLITE_PATH from contextvar when set."""
+    from dataagent.core.managers.llm_manager.thinking_override import inject_thinking_env
+
     env = dict(os.environ)
     sqlite_path = _user_sqlite_path.get()
     if sqlite_path:
@@ -961,6 +966,7 @@ def _build_shell_env() -> dict[str, str]:
         # 运行时该路径不存在，导致 skill 脚本 sqlite3.connect 报 OperationalError。
         # executor 注入的 DATABASE.config.path 是会话级权威值，必须覆盖 .env 默认。
         env["USER_SQLITE_PATH"] = sqlite_path
+    inject_thinking_env(env)
     return env
 
 
@@ -1838,6 +1844,9 @@ async def _sub_agent_run_subprocess_and_collect_outcome(
         env["DATAAGENT_LOG_PROCESS_NAME"] = "subagent"
         env["PYTHONIOENCODING"] = "utf-8"
         env[ENV_PRESERVE_ON_MISSING] = "1"
+        from dataagent.core.managers.llm_manager.thinking_override import inject_thinking_env
+
+        inject_thinking_env(env)
         shared_output = _parent_shared_output_dir()
         if shared_output is not None:
             env[SUBAGENT_OUTPUT_DIR_ENV] = str(shared_output)

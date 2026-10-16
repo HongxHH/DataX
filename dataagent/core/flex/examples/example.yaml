@@ -212,6 +212,7 @@ POST_WORKFLOW: []
 
 # ── Hook（可选，默认见 flex_default_configs.yaml） ───────────────────────────
 # 内置 hook name: pruner | portraiter | pre_metadata_tracker | post_metadata_tracker | cross_session_recall
+# pruner = IR/token 分层压缩（推荐）；pruner_v2 字符阈值路径已废弃，勿在新配置使用
 # 带 model 的 hook 项须为字典：name + model（引用 MODEL 槽位）
 HOOKS:
   agent:

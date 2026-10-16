@@ -69,7 +69,14 @@ curl -sS -o /dev/null -w "%{http_code}\n" "$BASE/types/typedefs"
 # 期望 200
 ```
 
-完整向量检索：下载 `BAAI/bge-base-zh-v1.5`，设置 `semantic_service.vector.embedding.service.enable=true` 和本地 `model.path` 后重启，再导入 seed。Semantic Service 是外部依赖，不在本仓库。
+完整向量检索：本机已有模型包时直接配路径（勿依赖 HF 在线下载），例如：
+
+```text
+semantic_service.vector.embedding.service.enable=true
+semantic_service.vector.embedding.model.path=E:/dev/Docker/semantic-layer/models/bge-base-zh-v1.5
+```
+
+改完后重启 Semantic（**不要** `-c` 除非要清库），再 bulk 导入 seed——关嵌入时导入的元数据 `table_description_vector` 会是 null，列检索会 400。Semantic Service 是外部依赖，不在本仓库。
 
 Landcheck Copilot 已使用 `schema_linking`；嵌入未打开时列检索会失败（`queryVector is null`）。
 

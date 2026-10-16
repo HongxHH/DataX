@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import json
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -34,6 +35,7 @@ from dataagent.actions.tools.local_tool.agent_status_handler import (
 from dataagent.actions.tools.local_tool.sandbox import Sandbox, get_current_sandbox, set_current_sandbox
 from dataagent.actions.tools.local_tool.tools import (
     _coerce_flex_state_dict_from_payload,
+    _flex_state_planner_summary,
     _run_subprocess_async,
     _synthetic_worker_result_dict,
 )
@@ -43,33 +45,6 @@ from dataagent.core.utils.subprocess import terminate_process_tree_async
 from dataagent.utils.runtime_paths import FLEX_PERSISTENCE_ROOT_ENV, SUBAGENT_OUTPUT_DIR_ENV, resolve_user_root
 
 _CANCEL_POLL_INTERVAL_SEC = 0.2
-
-
-def _flex_state_planner_summary(state: dict[str, Any] | None) -> str:
-    """Build a short planner-visible summary from NL2SQL / Flex final state.
-
-    HAZARD: tools.py 有一份更完整的同名函数（含 row_hint / artifact_note）。
-    job_tools.collect 走这里，同步 sub_agent_tool 走胖版，两条路径摘要不一致。
-    """
-    if not isinstance(state, dict):
-        return ""
-    stream = str(state.get("stream_message") or "").strip()
-    if stream:
-        return stream
-    sql = str(state.get("sql") or "").strip()
-    columns = state.get("columns")
-    rows = state.get("rows")
-    if sql and isinstance(rows, list) and rows:
-        col_names = [str(c) for c in columns] if isinstance(columns, list) else []
-        preview_rows = rows[:10]
-        lines = [f"SQL: {sql}"]
-        if col_names:
-            lines.append(f"列: {', '.join(col_names)}")
-        lines.append(f"结果预览（共 {len(rows)} 行）: {preview_rows}")
-        return "\n".join(lines)
-    if sql:
-        return f"SQL: {sql}"
-    return ""
 
 
 @dataclass(frozen=True)
@@ -156,6 +131,9 @@ class SubagentSubprocessRunner:
             env["DATAAGENT_LOG_FILE"] = str(sub_agent_log_path)
             env["DATAAGENT_LOG_PROCESS_NAME"] = "subagent"
             env["PYTHONIOENCODING"] = "utf-8"
+            from dataagent.core.managers.llm_manager.thinking_override import inject_thinking_env
+
+            inject_thinking_env(env)
             cmd = [
                 sys.executable,
                 "-m",
@@ -254,6 +232,10 @@ async def _run_cancellable_subprocess_async(
     if wrapped_cmd is not original_cmd:
         cwd = None
 
+    # Windows: CREATE_NEW_PROCESS_GROUP enables process-tree kill via taskkill /T.
+    creationflags = (
+        subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    )
     process = await asyncio.create_subprocess_exec(
         *wrapped_cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -261,6 +243,7 @@ async def _run_cancellable_subprocess_async(
         cwd=cwd,
         env=env,
         start_new_session=os.name != "nt",
+        creationflags=creationflags,
     )
     if callable(on_child_started) and process.pid is not None:
         on_child_started(int(process.pid))

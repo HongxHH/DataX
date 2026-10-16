@@ -275,6 +275,10 @@ datapilot.db
 !/tests/test_nl2sql_order_contract.py
 /tests/benchmark/*
 !/tests/benchmark/landcheck/
+!/tests/benchmark/resume_metric_cards.md
+!/tests/benchmark/resume_star_draft.md
+!/tests/benchmark/resume_metrics/
+/tests/benchmark/resume_metrics/runs/
 /scripts/
 /openspec/
 /.cursor/
